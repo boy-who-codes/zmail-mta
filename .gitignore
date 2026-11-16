@@ -26,4 +26,10 @@ dhat-heap.json
 .vscode/
 **/*.deb
 **/*.rpm
-/__pycache__/
+__pycache__/
+/deploy/docker/logs/
+/deploy/docker/spool/
+/deploy/docker/.env
+/web/node_modules/
+/web/.next/
+

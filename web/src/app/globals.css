@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #010102;
+  --surface-1: #0f1011;
+  --surface-2: #141516;
+  --surface-3: #18191a;
+  --surface-4: #191a1b;
+  --hairline: #23252a;
+  --hairline-strong: #34343a;
+  --hairline-tertiary: #3e3e44;
+  
+  --ink: #f7f8f8;
+  --ink-muted: #d0d6e0;
+  --ink-subtle: #8a8f98;
+  --ink-tertiary: #62666d;
+  
+  --primary: #5e6ad2;
+  --primary-hover: #828fff;
+  
+  /* Signature rare accent (Girlfriend's favorite color: Hot Pink) */
+  --accent-blush: #ff69b4;
+  --accent-blush-glow: rgba(255, 105, 180, 0.25);
+  --accent-blush-subtle: rgba(255, 105, 180, 0.12);
+  
+  --semantic-success: #27a644;
+  --semantic-warning: #ffc53d;
+  --semantic-error: #ff2047;
+  --semantic-info: #3b9eff;
+}
+
+body {
+  background-color: var(--canvas);
+  color: var(--ink);
+  font-family: 'Switzer', var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Custom scrollbars for OS windows */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #23252a;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #34343a;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.65;
+    transform: scale(0.92);
+  }
+}
+
+.animate-heartbeat {
+  animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

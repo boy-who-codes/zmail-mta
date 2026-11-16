@@ -90,6 +90,22 @@ fi
 
 # 5. Build and Launch Containers
 echo -e "${CYAN}[5/5] Building and starting ZMAIL containers...${NC}"
+
+# Verify required Dockerfiles exist before starting build
+if [ ! -f "${ROOT_DIR}/backend/Dockerfile" ]; then
+  echo -e "${RED}Error: ${ROOT_DIR}/backend/Dockerfile not found!${NC}"
+  exit 1
+fi
+
+if [ ! -f "${ROOT_DIR}/web/Dockerfile" ]; then
+  echo -e "${YELLOW}Warning: ${ROOT_DIR}/web/Dockerfile not found. Checking git submodules...${NC}"
+  cd "${ROOT_DIR}" && git submodule update --init --recursive 2>/dev/null || true
+  if [ ! -f "${ROOT_DIR}/web/Dockerfile" ]; then
+    echo -e "${RED}Error: ${ROOT_DIR}/web/Dockerfile is still missing. Please run 'git pull' or verify your repository clone.${NC}"
+    exit 1
+  fi
+fi
+
 cd "${DOCKER_DIR}"
 docker compose up -d --build
 
