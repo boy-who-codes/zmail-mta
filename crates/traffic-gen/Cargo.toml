@@ -1,0 +1,30 @@
+[package]
+name = "traffic-gen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+chrono = {workspace=true, default-features=false, features=["clock"]}
+clap = {workspace=true}
+futures = {workspace=true}
+futures-util = {workspace=true}
+hdrhistogram = {workspace=true}
+humansize = {workspace=true}
+humanize-rs = {workspace=true}
+lipsum = {workspace=true}
+mailparsing = {path="../mailparsing"}
+nix = {workspace=true, features=["resource"]}
+num-format = {workspace=true}
+rand = {workspace=true}
+reqwest = {workspace=true, default-features=false, features=["json", "rustls-tls"]}
+kumo-http-client = {path="../kumo-http-client"}
+rfc5321 = {path="../rfc5321"}
+serde = {workspace=true}
+textwrap = {workspace=true}
+throttle = {path="../throttle"}
+tokio = {workspace=true, features=["full"]}
+uuid = {workspace=true, features=["v4", "rng"]}
+
+[lints]
+workspace = true

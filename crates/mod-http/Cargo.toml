@@ -1,0 +1,26 @@
+[package]
+name = "mod-http"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+config = {path="../config"}
+duration-serde = {path="../duration-serde"}
+futures-util = {workspace=true}
+humantime = {workspace=true}
+kumo-http-client = {path="../kumo-http-client"}
+mail-builder = {workspace=true}
+mailparse = {workspace=true}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize", "macros"]}
+reqwest = {workspace=true, default-features=false, features=["rustls-tls"]}
+serde = {workspace=true}
+tokio = {workspace=true}
+tokio-tungstenite = {workspace=true}
+mod-aws-sigv4 = {path="../mod-aws-sigv4"}
+
+[dev-dependencies]
+k9 = {workspace=true}
+
+[lints]
+workspace = true

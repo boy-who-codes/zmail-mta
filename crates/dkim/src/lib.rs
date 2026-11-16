@@ -1,0 +1,713 @@
+// Implementation of DKIM: https://datatracker.ietf.org/doc/html/rfc6376
+
+use crate::errors::Status;
+use crate::hash::HeaderList;
+use crate::header::TaggedHeader;
+use dns_resolver::{HickoryResolver, Resolver};
+use ed25519_dalek::pkcs8::DecodePrivateKey;
+use ed25519_dalek::SigningKey;
+use mailparsing::AuthenticationResult;
+use openssl::md::Md;
+use openssl::pkey::PKey;
+use openssl::pkey_ctx::PkeyCtx;
+use openssl::rsa::{Padding, Rsa};
+use std::collections::BTreeMap;
+
+pub mod arc;
+pub mod canonicalization;
+mod errors;
+mod hash;
+mod header;
+mod parsed_email;
+mod parser;
+mod public_key;
+#[cfg(test)]
+mod roundtrip_test;
+mod sign;
+
+pub use errors::DKIMError;
+use header::{DKIMHeader, DKIM_SIGNATURE_HEADER_NAME};
+pub use parsed_email::ParsedEmail;
+pub use parser::{tag_list as parse_tag_list, Tag};
+pub use sign::{Signer, SignerBuilder};
+
+const DNS_NAMESPACE: &str = "_domainkey";
+
+#[derive(Debug)]
+pub(crate) enum DkimPublicKey {
+    Rsa(PKey<openssl::pkey::Public>),
+    Ed25519(ed25519_dalek::VerifyingKey),
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum DkimPrivateKey {
+    Ed25519(SigningKey),
+    OpenSSLRsa(Rsa<openssl::pkey::Private>),
+}
+
+impl DkimPrivateKey {
+    /// Parse RSA key data into a DkimPrivateKey
+    pub fn rsa_key(data: &[u8]) -> Result<Self, DKIMError> {
+        let mut errors = vec![];
+
+        match Rsa::private_key_from_pem(data) {
+            Ok(key) => return Ok(Self::OpenSSLRsa(key)),
+            Err(err) => errors.push(format!("openssl private_key_from_pem: {err:#}")),
+        };
+        match Rsa::private_key_from_der(data) {
+            Ok(key) => return Ok(Self::OpenSSLRsa(key)),
+            Err(err) => errors.push(format!("openssl private_key_from_der: {err:#}")),
+        };
+
+        Err(DKIMError::PrivateKeyLoadError(errors.join(". ")))
+    }
+
+    /// Load RSA key data from a file and parse it into a DkimPrivateKey
+    pub fn rsa_key_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, DKIMError> {
+        let path = path.as_ref();
+        let data = std::fs::read(path).map_err(|err| {
+            DKIMError::PrivateKeyLoadError(format!(
+                "rsa_key_file: failed to read file {path:?}: {err:#}"
+            ))
+        })?;
+        Self::rsa_key(&data)
+    }
+
+    /// Parse PKCS8 encoded ed25519 key data into a DkimPrivateKey.
+    /// Both DER and PEM are supported
+    pub fn ed25519_key(data: &[u8]) -> Result<Self, DKIMError> {
+        let mut errors = vec![];
+
+        match SigningKey::from_pkcs8_der(data) {
+            Ok(key) => return Ok(Self::Ed25519(key)),
+            Err(err) => errors.push(format!("Ed25519 SigningKey::from_pkcs8_der: {err:#}")),
+        }
+
+        match std::str::from_utf8(data) {
+            Ok(s) => match SigningKey::from_pkcs8_pem(s) {
+                Ok(key) => return Ok(Self::Ed25519(key)),
+                Err(err) => errors.push(format!("Ed25519 SigningKey::from_pkcs8_pem: {err:#}")),
+            },
+            Err(err) => errors.push(format!("ed25519_key: data is not UTF-8: {err:#}")),
+        }
+
+        Err(DKIMError::PrivateKeyLoadError(errors.join(". ")))
+    }
+
+    /// Parse either an RSA or ed25519 key into a DkimPrivateKey.
+    /// Both DER and PEM are supported.
+    pub fn key(data: &[u8]) -> Result<Self, DKIMError> {
+        let mut errors = vec![];
+
+        match Rsa::private_key_from_pem(data) {
+            Ok(key) => return Ok(Self::OpenSSLRsa(key)),
+            Err(err) => errors.push(format!("openssl private_key_from_pem: {err:#}")),
+        }
+        match Rsa::private_key_from_der(data) {
+            Ok(key) => return Ok(Self::OpenSSLRsa(key)),
+            Err(err) => errors.push(format!("openssl private_key_from_der: {err:#}")),
+        }
+        match SigningKey::from_pkcs8_der(data) {
+            Ok(key) => return Ok(Self::Ed25519(key)),
+            Err(err) => errors.push(format!("Ed25519 SigningKey::from_pkcs8_der: {err:#}")),
+        }
+        match std::str::from_utf8(data) {
+            Ok(s) => match SigningKey::from_pkcs8_pem(s) {
+                Ok(key) => return Ok(Self::Ed25519(key)),
+                Err(err) => errors.push(format!("Ed25519 SigningKey::from_pkcs8_pem: {err:#}")),
+            },
+            Err(err) => errors.push(format!("ed25519_key: data is not UTF-8: {err:#}")),
+        }
+
+        Err(DKIMError::PrivateKeyLoadError(errors.join(". ")))
+    }
+}
+
+// https://datatracker.ietf.org/doc/html/rfc6376#section-6.1.3 Step 4
+fn verify_signature(
+    hash_algo: hash::HashAlgo,
+    header_hash: &[u8],
+    signature: &[u8],
+    public_key: DkimPublicKey,
+) -> Result<bool, DKIMError> {
+    Ok(match public_key {
+        DkimPublicKey::Rsa(public_key) => {
+            let md = match hash_algo {
+                hash::HashAlgo::RsaSha1 => Md::sha1(),
+                hash::HashAlgo::RsaSha256 => Md::sha256(),
+                hash @ hash::HashAlgo::Ed25519Sha256 => {
+                    // Algo is not compatible with RSA.
+                    // This case can happen when we're looking a DKIM-Header
+                    // with a=ed25519-sha256, but where domain publishes both
+                    // an rsa and an ed25519 public key in dns
+                    return Err(DKIMError::UnsupportedHashAlgorithm(format!("{hash:?}")));
+                }
+            };
+
+            let mut ctx = PkeyCtx::new(&public_key).map_err(|err| {
+                DKIMError::SignatureSyntaxError(format!("Error loading RSA public key: {err}"))
+            })?;
+
+            ctx.verify_init().map_err(|err| {
+                DKIMError::UnknownInternalError(format!("ctx.verify_init failed: {err}"))
+            })?;
+            ctx.set_rsa_padding(Padding::PKCS1).map_err(|err| {
+                DKIMError::UnknownInternalError(format!("ctx.set_rsa_padding failed: {err}"))
+            })?;
+            ctx.set_signature_md(md).map_err(|err| {
+                DKIMError::UnknownInternalError(format!("ctx.set_signature_md failed: {err}"))
+            })?;
+            ctx.verify(header_hash, signature).unwrap_or_default()
+        }
+        DkimPublicKey::Ed25519(public_key) => {
+            let mut sig_bytes = [0u8; ed25519_dalek::Signature::BYTE_SIZE];
+            if signature.len() != sig_bytes.len() {
+                return Err(DKIMError::SignatureSyntaxError(format!(
+                    "ed25519 signatures should be {} bytes in length, have: {}",
+                    ed25519_dalek::Signature::BYTE_SIZE,
+                    signature.len()
+                )));
+            }
+            sig_bytes.copy_from_slice(signature);
+
+            public_key
+                .verify_strict(
+                    header_hash,
+                    &ed25519_dalek::Signature::from_bytes(&sig_bytes),
+                )
+                .is_ok()
+        }
+    })
+}
+
+async fn verify_email_header<'a>(
+    resolver: &dyn Resolver,
+    signature_header_name: &str,
+    dkim_header: &'a TaggedHeader,
+    email: &'a ParsedEmail<'a>,
+) -> Result<(), DKIMError> {
+    let public_keys = public_key::retrieve_public_keys(
+        resolver,
+        dkim_header.get_required_tag("d"),
+        dkim_header.get_required_tag("s"),
+    )
+    .await?;
+
+    let (header_canonicalization_type, body_canonicalization_type) =
+        parser::parse_canonicalization(dkim_header.get_tag("c"))?;
+    let hash_algo = parser::parse_hash_algo(dkim_header.get_required_tag("a"))?;
+
+    let header_list: Vec<String> = dkim_header
+        .get_required_tag("h")
+        .split(':')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .collect();
+    let header_list = HeaderList::new(header_list).compute_concrete_header_list(email);
+
+    let computed_headers_hash = hash::compute_headers_hash(
+        header_canonicalization_type,
+        &header_list,
+        hash_algo,
+        dkim_header,
+        signature_header_name,
+    )?;
+
+    if let Some(header_body_hash) = dkim_header.get_tag("bh") {
+        let computed_body_hash = hash::compute_body_hash(
+            body_canonicalization_type,
+            dkim_header.parse_tag("l")?,
+            hash_algo,
+            email,
+        )?;
+        tracing::debug!("body_hash {:?}", computed_body_hash);
+        if header_body_hash != computed_body_hash {
+            return Err(DKIMError::BodyHashDidNotVerify);
+        }
+    }
+
+    let signature = data_encoding::BASE64
+        .decode(dkim_header.get_required_tag("b").as_bytes())
+        .map_err(|err| {
+            DKIMError::SignatureSyntaxError(format!("failed to decode signature: {}", err))
+        })?;
+
+    let mut errors = vec![];
+    for public_key in public_keys {
+        match verify_signature(hash_algo, &computed_headers_hash, &signature, public_key) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(err) => {
+                errors.push(err);
+            }
+        }
+    }
+
+    if let Some(err) = errors.pop() {
+        // Something definitely failed
+        return Err(err);
+    }
+
+    // There were no errors and all keys returned false from verify_signature().
+    // That means that the signature is not verified.
+    Err(DKIMError::SignatureDidNotVerify)
+}
+
+/// Run the DKIM verification on the email providing an existing resolver
+pub async fn verify_email_with_resolver<'a>(
+    email: &'a ParsedEmail<'a>,
+    resolver: &dyn Resolver,
+) -> Result<Vec<AuthenticationResult>, DKIMError> {
+    fn populate_props(tagged_header: &TaggedHeader) -> BTreeMap<String, bstr::BString> {
+        let mut props = BTreeMap::new();
+
+        if let Some(signing_domain) = tagged_header.get_tag("d") {
+            props.insert("header.d".into(), signing_domain.into());
+            props.insert("header.i".into(), format!("@{signing_domain}").into());
+        }
+        if let Some(a_tag) = tagged_header.get_tag("a") {
+            props.insert("header.a".into(), a_tag.into());
+        }
+        if let Some(s_tag) = tagged_header.get_tag("s") {
+            props.insert("header.s".into(), s_tag.into());
+        }
+
+        if let Some(c_tag) = tagged_header.get_tag("c") {
+            props.insert("header.c".into(), c_tag.into());
+        }
+        if let Some(t_tag) = tagged_header.get_tag("t") {
+            props.insert("header.t".into(), t_tag.into());
+        }
+        if let Some(x_tag) = tagged_header.get_tag("x") {
+            props.insert("header.x".into(), x_tag.into());
+        }
+
+        props
+    }
+
+    let mut results = vec![];
+
+    let mut dkim_headers = vec![];
+
+    for h in email.get_headers().iter_named(DKIM_SIGNATURE_HEADER_NAME) {
+        // Limit DoS impact if a malicious message is filled with signatures.
+        // Both failed parses (results) and successful ones (dkim_headers, each
+        // of which drives a DNS lookup and a verification) count against the cap.
+        if results.len() + dkim_headers.len() > 10 {
+            break;
+        }
+
+        let raw_header = h.get_raw_value_string()?;
+        match DKIMHeader::parse(&raw_header) {
+            Ok(v) => {
+                dkim_headers.push(v);
+            }
+            Err(err) => {
+                let props = TaggedHeader::parse(&raw_header)
+                    .map(|tagged| populate_props(&tagged))
+                    .unwrap_or_default();
+                results.push(AuthenticationResult {
+                    method: "dkim".into(),
+                    method_version: None,
+                    result: "permerror".into(),
+                    reason: Some(format!("{err}").into()),
+                    props,
+                });
+            }
+        }
+    }
+
+    /// <https://datatracker.ietf.org/doc/html/rfc6008>
+    /// The value associated with this item in the header field MUST be
+    /// at least the first eight characters of the digital signature
+    /// (the "b=" tag from a DKIM-Signature) for which a result is being
+    /// relayed, and MUST be long enough to be unique among the results being
+    /// reported.
+    fn compute_header_b(b_tag: &str, headers: &[DKIMHeader]) -> String {
+        let total = b_tag.chars().count();
+
+        // At least the first eight characters, and never more than the whole tag.
+        let mut needed = total.min(8);
+
+        for h in headers {
+            let candidate = h.get_required_tag("b");
+            if candidate == b_tag {
+                continue;
+            }
+            // One character past the shared leading run distinguishes b_tag from
+            // this candidate; extend to cover it, up to the whole tag.
+            let shared = b_tag
+                .chars()
+                .zip(candidate.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            needed = needed.max((shared + 1).min(total));
+        }
+
+        b_tag.chars().take(needed).collect()
+    }
+
+    for dkim_header in &dkim_headers {
+        let mut props = populate_props(dkim_header);
+
+        let b_tag = compute_header_b(dkim_header.get_required_tag("b"), &dkim_headers);
+        props.insert("header.b".into(), b_tag.into());
+
+        let mut reason = None;
+        let result =
+            match verify_email_header(resolver, DKIM_SIGNATURE_HEADER_NAME, dkim_header, email)
+                .await
+            {
+                Ok(()) => "pass",
+                Err(err) => {
+                    reason.replace(format!("{err}"));
+                    match err.status() {
+                        Status::Tempfail => "temperror",
+                        Status::Permfail => "permerror",
+                    }
+                }
+            };
+
+        results.push(AuthenticationResult {
+            method: "dkim".into(),
+            method_version: None,
+            result: result.into(),
+            reason: reason.map(Into::into),
+            props,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Run the DKIM verification on the email
+pub async fn verify_email<'a>(
+    email: &'a ParsedEmail<'a>,
+) -> Result<Vec<AuthenticationResult>, DKIMError> {
+    let resolver = HickoryResolver::new().map_err(|err| {
+        DKIMError::UnknownInternalError(format!("failed to create DNS resolver: {}", err))
+    })?;
+
+    verify_email_with_resolver(email, &resolver).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bstr::ByteSlice;
+    use dns_resolver::TestResolver;
+
+    const NEW_ENGLAND_DKIM: (&str, &str) = (
+        "newengland._domainkey.example.com",
+        "v=DKIM1; p=MIGJAoGBALVI635dLK4cJJAH3Lx6upo3X/Lm1tQz3mezcWTA3BUBnyIsdnRf57aD5BtNmhPrYYDlWlzw3UgnKisIxktkk5+iMQMlFtAS10JB8L3YadXNJY+JBcbeSi5TgJe4WFzNgW95FWDAuSTRXSWZfA/8xjflbTLDx0euFZOM7C4T0GwLAgMBAAE=",
+    );
+
+    #[test]
+    fn test_validate_header() {
+        let header = r#"v=1; a=rsa-sha256; d=example.net; s=brisbane;
+c=relaxed/simple; q=dns/txt; i=foo@eng.example.net;
+t=1117574938; x=9118006938; l=200;
+h=from:to:subject:date:keywords:keywords;
+z=From:foo@eng.example.net|To:joe@example.com|
+Subject:demo=20run|Date:July=205,=202005=203:44:08=20PM=20-0700;
+bh=MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=;
+b=dzdVyOfAKCdLXdJOc9G2q8LoXSlEniSbav+yuU4zGeeruD00lszZ
+      VoG4ZHRNiYzR
+        "#;
+        DKIMHeader::parse(header).unwrap();
+    }
+
+    #[test]
+    fn test_validate_header_missing_tag() {
+        let header = "v=1; a=rsa-sha256; bh=a; b=b";
+        assert_eq!(
+            DKIMHeader::parse(header).unwrap_err(),
+            DKIMError::SignatureMissingRequiredTag("d")
+        );
+    }
+
+    #[test]
+    fn test_validate_header_domain_mismatch() {
+        let header = r#"v=1; a=rsa-sha256; d=example.net; s=brisbane; i=foo@hein.com; h=headers; bh=hash; b=hash
+        "#;
+        assert_eq!(
+            DKIMHeader::parse(header).unwrap_err(),
+            DKIMError::DomainMismatch
+        );
+
+        let header = r#"v=1; a=rsa-sha256; d=example.net; s=brisbane.net; i=foo@fexample.net; h=headers; bh=hash; b=hash
+        "#;
+        assert_eq!(
+            DKIMHeader::parse(header).unwrap_err(),
+            DKIMError::DomainMismatch
+        );
+    }
+
+    #[test]
+    fn test_validate_header_incompatible_version() {
+        let header = r#"v=3; a=rsa-sha256; d=example.net; s=brisbane; i=foo@example.net; h=headers; bh=hash; b=hash
+        "#;
+        assert_eq!(
+            DKIMHeader::parse(header).unwrap_err(),
+            DKIMError::IncompatibleVersion
+        );
+    }
+
+    #[test]
+    fn test_validate_header_missing_from_in_headers_signature() {
+        let header = r#"v=1; a=rsa-sha256; d=example.net; s=brisbane; i=foo@example.net; h=Subject:A:B; bh=hash; b=hash
+        "#;
+        assert_eq!(
+            DKIMHeader::parse(header).unwrap_err(),
+            DKIMError::FromFieldNotSigned
+        );
+    }
+
+    #[test]
+    fn test_validate_header_expired_in_drift() {
+        let mut now = chrono::Utc::now().naive_utc();
+        now -= chrono::Duration::try_seconds(1).expect("1 second to be valid");
+
+        let header = format!("v=1; a=rsa-sha256; d=example.net; s=brisbane; i=foo@example.net; h=From:B; bh=hash; b=hash; x={}", now.and_utc().timestamp());
+
+        assert!(DKIMHeader::parse(&header).is_ok());
+    }
+
+    #[test]
+    fn test_validate_header_expired() {
+        let mut now = chrono::Utc::now().naive_utc();
+        now -= chrono::Duration::try_hours(3).expect("3 hours to be legit");
+
+        let header = format!("v=1; a=rsa-sha256; d=example.net; s=brisbane; i=foo@example.net; h=From:B; bh=hash; b=hash; x={}", now.and_utc().timestamp());
+
+        assert_eq!(
+            DKIMHeader::parse(&header).unwrap_err(),
+            DKIMError::SignatureExpired
+        );
+    }
+
+    #[tokio::test]
+    async fn test_short_b_tag_does_not_panic() {
+        // Two signatures whose b= tags don't share a common prefix, where one
+        // b= is shorter than the 8 character minimum that compute_header_b
+        // starts from. The shorter value must not be sliced past its length.
+        let raw_email = concat!(
+            "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=sel1; h=From; bh=AAAA; b=short\r\n",
+            "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=sel2; h=From; bh=AAAA; b=alongerbase64valuethatexceedseightbytes\r\n",
+            "From: user@example.com\r\n\r\nhello",
+        );
+
+        let email = ParsedEmail::parse(raw_email).unwrap();
+        let resolver = TestResolver::default();
+
+        let res = verify_email_with_resolver(&email, &resolver).await.unwrap();
+        assert_eq!(res.len(), 2);
+
+        // The short tag is reported whole. The long tag is trimmed to the eight
+        // character minimum since it doesn't share a prefix with the short one.
+        assert_eq!(
+            res[0].props.get("header.b").unwrap().to_str().unwrap(),
+            "short"
+        );
+        assert_eq!(
+            res[1].props.get("header.b").unwrap().to_str().unwrap(),
+            "alongerb"
+        );
+    }
+
+    async fn header_b_values(raw_email: &str) -> Vec<String> {
+        let email = ParsedEmail::parse(raw_email).unwrap();
+        let resolver = TestResolver::default();
+        verify_email_with_resolver(&email, &resolver)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                r.props
+                    .get("header.b")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_header_b_prefix_extension() {
+        // Two b= tags sharing exactly the eight character floor must each
+        // extend to nine to stay distinct, proving the floor is not a ceiling.
+        assert_eq!(
+            header_b_values(concat!(
+                "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=s1; h=From; bh=AAAA; b=AAAAAAAAX\r\n",
+                "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=s2; h=From; bh=AAAA; b=AAAAAAAAY\r\n",
+                "From: user@example.com\r\n\r\nhello",
+            ))
+            .await,
+            vec!["AAAAAAAAX", "AAAAAAAAY"]
+        );
+
+        // A long shared prefix drives the length past the floor. The length is
+        // the max across candidates (not the nearest one), capped at the tag
+        // itself when a tag is a strict prefix of another.
+        assert_eq!(
+            header_b_values(concat!(
+                "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=s1; h=From; bh=AAAA; b=COMMONPREFIXAAAAAA\r\n",
+                "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=s2; h=From; bh=AAAA; b=COMMONPREFIXAB\r\n",
+                "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=s3; h=From; bh=AAAA; b=COMMONXYZ\r\n",
+                "From: user@example.com\r\n\r\nhello",
+            ))
+            .await,
+            vec!["COMMONPREFIXAA", "COMMONPREFIXAB", "COMMONXY"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_expired_signature_populates_props() {
+        let x_value = "1";
+
+        let raw_email = format!(
+            "DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=example.net; s=brisbane; h=From; bh=hash; b=abcdefgh12345678; t=1; x={}\r\nFrom: user@example.net\r\n\r\nhello",
+            x_value,
+        );
+
+        let email = ParsedEmail::parse(raw_email).unwrap();
+        let resolver = TestResolver::default();
+
+        let res = verify_email_with_resolver(&email, &resolver).await.unwrap();
+        assert_eq!(res.len(), 1);
+
+        let result = &res[0];
+        assert_eq!(result.result, "permerror");
+        assert_eq!(
+            result.props.get("header.d").unwrap().to_str().unwrap(),
+            "example.net"
+        );
+        assert_eq!(
+            result.props.get("header.a").unwrap().to_str().unwrap(),
+            "rsa-sha256"
+        );
+        assert_eq!(
+            result.props.get("header.s").unwrap().to_str().unwrap(),
+            "brisbane"
+        );
+        assert_eq!(
+            result.props.get("header.c").unwrap().to_str().unwrap(),
+            "simple/simple"
+        );
+        assert_eq!(result.props.get("header.t").unwrap().to_str().unwrap(), "1");
+        assert_eq!(
+            result.props.get("header.x").unwrap().to_str().unwrap(),
+            x_value
+        );
+        assert!(result.props.get("header.b").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_email_header_ed25519() {
+        let raw_email = r#"DKIM-Signature: v=1; a=ed25519-sha256; c=relaxed/relaxed;
+ d=football.example.com; i=@football.example.com;
+ q=dns/txt; s=brisbane; t=1528637909; h=from : to :
+ subject : date : message-id : from : subject : date;
+ bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;
+ b=/gCrinpcQOoIfuHNQIbq4pgh9kyIK3AQUdt9OdqQehSwhEIug4D11Bus
+ Fa3bT3FY5OsU7ZbnKELq+eXdp1Q1Dw==
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+ d=football.example.com; i=@football.example.com;
+ q=dns/txt; s=test; t=1528637909; h=from : to : subject :
+ date : message-id : from : subject : date;
+ bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;
+ b=F45dVWDfMbQDGHJFlXUNB2HKfbCeLRyhDXgFpEL8GwpsRe0IeIixNTe3
+ DhCVlUrSjV4BwcVcOF6+FF3Zo9Rpo1tFOeS9mPYQTnGdaSGsgeefOsk2Jz
+ dA+L10TeYt9BgDfQNZtKdN1WO//KgIqXP7OdEFE4LjFYNcUxZQ4FADY+8=
+From: Joe SixPack <joe@football.example.com>
+To: Suzie Q <suzie@shopping.example.net>
+Subject: Is dinner ready?
+Date: Fri, 11 Jul 2003 21:00:37 -0700 (PDT)
+Message-ID: <20030712040037.46341.5F8J@football.example.com>
+
+Hi.
+
+We lost the game.  Are you hungry yet?
+
+Joe."#
+            .replace('\n', "\r\n");
+
+        let email = ParsedEmail::parse(raw_email).unwrap();
+        let raw_header_dkim = email
+            .get_headers()
+            .iter_named(DKIM_SIGNATURE_HEADER_NAME)
+            .next()
+            .unwrap()
+            .get_raw_value_string()
+            .unwrap();
+
+        const DKIM_BRISBANE: &str = r#"
+$ORIGIN brisbane._domainkey.football.example.com
+@     300 TXT "v=DKIM1; p=MIGJAoGBALVI635dLK4cJJAH3Lx6upo3X/Lm1tQz3mezcWTA3BUBnyIsdnRf57aD5BtNmhPrYYDlWlzw3UgnKisIxktkk5+iMQMlFtAS10JB8L3YadXNJY+JBcbeSi5TgJe4WFzNgW95FWDAuSTRXSWZfA/8xjflbTLDx0euFZOM7C4T0GwLAgMBAAE="
+          TXT "v=DKIM1; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+"#;
+
+        let resolver = TestResolver::default().with_zone(DKIM_BRISBANE).unwrap();
+
+        verify_email_header(
+            &resolver,
+            DKIM_SIGNATURE_HEADER_NAME,
+            &DKIMHeader::parse(raw_header_dkim).unwrap(),
+            &email,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_validate_email_header_rsa() {
+        // unfortunately the original RFC spec had a typo, and the mail content differs
+        // between algorithms
+        // https://www.rfc-editor.org/errata_search.php?rfc=6376&rec_status=0
+        let raw_email =
+            r#"DKIM-Signature: a=rsa-sha256; bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=;
+ c=simple/simple; d=example.com;
+ h=Received:From:To:Subject:Date:Message-ID; i=joe@football.example.com;
+ s=newengland; t=1615825284; v=1;
+ b=Xh4Ujb2wv5x54gXtulCiy4C0e+plRm6pZ4owF+kICpYzs/8WkTVIDBrzhJP0DAYCpnL62T0G
+ k+0OH8pi/yqETVjKtKk+peMnNvKkut0GeWZMTze0bfq3/JUK3Ln3jTzzpXxrgVnvBxeY9EZIL4g
+ s4wwFRRKz/1bksZGSjD8uuSU=
+Received: from client1.football.example.com  [192.0.2.1]
+      by submitserver.example.com with SUBMISSION;
+      Fri, 11 Jul 2003 21:01:54 -0700 (PDT)
+From: Joe SixPack <joe@football.example.com>
+To: Suzie Q <suzie@shopping.example.net>
+Subject: Is dinner ready?
+Date: Fri, 11 Jul 2003 21:00:37 -0700 (PDT)
+Message-ID: <20030712040037.46341.5F8J@football.example.com>
+
+Hi.
+
+We lost the game. Are you hungry yet?
+
+Joe.
+"#
+            .replace('\n', "\r\n");
+        let email = ParsedEmail::parse(raw_email).unwrap();
+        let raw_header_rsa = email
+            .get_headers()
+            .iter_named(DKIM_SIGNATURE_HEADER_NAME)
+            .next()
+            .unwrap()
+            .get_raw_value_string()
+            .unwrap();
+
+        let resolver =
+            TestResolver::default().with_txt(NEW_ENGLAND_DKIM.0, NEW_ENGLAND_DKIM.1.to_owned());
+
+        verify_email_header(
+            &resolver,
+            DKIM_SIGNATURE_HEADER_NAME,
+            &DKIMHeader::parse(raw_header_rsa).unwrap(),
+            &email,
+        )
+        .await
+        .unwrap();
+    }
+}

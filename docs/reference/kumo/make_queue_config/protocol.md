@@ -1,0 +1,308 @@
+---
+tags:
+ - port
+---
+
+# protocol
+
+Configure the delivery protocol. The default is to use SMTP to the
+domain associated with the queue, but you can also configure delivering
+to a local [maildir](http://www.courier-mta.org/maildir.html), or using
+custom lua code to process a message
+
+### Example of smart-hosting with the SMTP protocol
+
+{{since('2023.08.22-4d895015')}}
+
+Rather than relying on MX resolution, you can provide an explicit list
+of MX host names or IP addresses to which the queue should deliver.
+The addresses will be tried in the order specified.
+
+```lua
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if domain == 'smarthost.example.com' then
+    -- Relay via some other internal infrastructure.
+    -- Enclose IP (or IPv6) addresses in `[]`.
+    -- Otherwise the name will be resolved for A and AAAA records
+    return kumo.make_queue_config {
+      protocol = {
+        smtp = {
+          mx_list = {
+            'smart.host.local',
+            { name = 'mx.example.com', addr = '10.0.0.1' },
+          },
+        },
+      },
+    }
+  end
+  -- Otherwise, just use the defaults
+  return kumo.make_queue_config {}
+end)
+```
+
+{{since('2025.10.06-5ec871ab', indent=True)}}
+    You may now use port numbers to override the outbound port number.
+
+    ```lua
+    return kumo.make_queue_config {
+      protocol = {
+        smtp = {
+          mx_list = {
+            'smart.host.local:2025',
+            { name = 'mx.example.com', addr = '10.0.0.1:2025' },
+          },
+        },
+      },
+    }
+    ```
+
+    Note that a `remote_port` defined in the egress source will override a port
+    that you define here.  A port number defined here in `mx_list` overrides a
+    port number defined by `make_egress_path` in your shaping configuration.
+
+#### treat_mx_list_as_secure
+
+{{since('2026.09.22-a276d4a8')}}
+
+When [enable_dane](../make_egress_path/enable_dane.md) is set, DANE requires
+that the *selection* of the destination host be trusted: normally this is
+established by DNSSEC-validating the `MX` RRset. An `mx_list` bypasses `MX`
+resolution, so by default kumomta does **not** consider its hosts to be a
+secure selection, and DANE will not engage for them.
+
+Set `treat_mx_list_as_secure = true` to assert that the hosts in `mx_list`
+are a trusted selection (for example, a statically configured internal
+relay). When set, DANE may apply to those hosts, provided their address
+(`A`/`AAAA`) records are themselves DNSSEC-validated.
+
+```lua
+return kumo.make_queue_config {
+  protocol = {
+    smtp = {
+      mx_list = { 'relay.internal' },
+      treat_mx_list_as_secure = true,
+    },
+  },
+}
+```
+
+!!! danger
+    Do not set this when `mx_list` is derived from an untracked DNS lookup.
+    For example, populating `mx_list` from
+    [kumo.dns.lookup_mx](../../kumo.dns/lookup_mx.md) and unconditionally setting
+    `treat_mx_list_as_secure = true` would let a spoofed `MX` response steer
+    delivery to an attacker-chosen host that passes DANE, defeating the
+    downgrade resistance that DANE is meant to provide. If you must build
+    `mx_list` from a lookup, propagate the lookup's own secure status
+    instead:
+
+    ```lua
+    local mx = kumo.dns.lookup_mx 'example.com'
+    return kumo.make_queue_config {
+      protocol = {
+        smtp = {
+          mx_list = mx.hosts,
+          treat_mx_list_as_secure = mx.is_secure,
+        },
+      },
+    }
+    ```
+
+### Example of using the Maildir protocol
+
+```lua
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if domain == 'maildir.example.com' then
+    -- Store this domain into a maildir, rather than attempting
+    -- to deliver via SMTP
+    return kumo.make_queue_config {
+      protocol = {
+        maildir_path = '/var/tmp/kumo-maildir',
+      },
+    }
+  end
+  -- Otherwise, just use the defaults
+  return kumo.make_queue_config {}
+end)
+```
+
+!!! note
+    Maildir support is present primarily for functional validation
+    rather than being present as a first class delivery mechanism.
+
+Failures to write to the maildir will cause the message to be delayed and
+retried approximately 1 minute later.  The normal message retry schedule does
+not apply.
+
+#### Specifying directory and file modes for maildir
+
+{{since('2025.01.23-7273d2bc')}}
+
+If you are sharing the maildir with something like dovecot it can sometimes
+be desirable to explicitly control the file permissions of the directory
+structure and files that are created.  You can achieve this via the `dir_mode`
+and `file_mode` parameters.
+
+!!! note
+    Lua doesn't support native octal literal numbers, so you must use
+    `tonumber` as shown in the example below if you wish to specify
+    the modes in octal
+
+```lua
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if domain == 'maildir.example.com' then
+    return kumo.make_queue_config {
+      protocol = {
+        maildir_path = '/var/tmp/kumo-maildir',
+        dir_mode = tonumber('775', 8),
+        file_mode = tonumber('664', 8),
+      },
+    }
+  end
+end)
+```
+
+#### Advanced Maildir Path
+
+{{since('2025.01.23-7273d2bc')}}
+
+If you are sharing the maildir with something like dovecot it is desirable
+to be able to put messages into per-user maildirs.
+You can achieve this through templated paths.
+
+The `maildir_path` field supports [template expansion](../../template/index.md).
+
+The following values are pre-defined in the context:
+
+  * `meta` - the full set of metadata from the message.
+  * `queue` - the effective queue name of the message.
+  * `campaign` - the campaign associated with the message (may be nil).
+  * `tenant` - the tenant associated with the message (may be nil).
+  * `domain` - the domain portion of the queue name (usually the same thing
+    as `domain_part`, but may be different if you are using advanced queue
+    name assignment).
+  * `routing_domain` - the routing domain portion of the queue (may be nil).
+  * `local_part` - the user mailbox portion of the envelope recipient email address. See [address.user](../../address/user.md) for the semantics of how this is produced.
+  * `domain_part` - the domain portion of the envelope recipient email address.
+  * `email` - the full envelope recipient email address.
+  * `sender_local_part` the user mailbox portion of the envelope sender email address. See [address.user](../../address/user.md) for the semantics of how this is produced.
+  * `sender_domain_part` the domain portion of the envelope sender email address.
+  * `sender_email` the full envelope sender email address.
+
+In the example below, each recipient domain has its own directory created
+(although in this example, we only do this for `maildir.example.com`), and each
+individual user at that domain has their own maildir created.
+
+"created" here means that kumomta will create it if it doesn't already exist,
+and deliver to it in either case.
+
+```lua
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if domain == 'maildir.example.com' then
+    return kumo.make_queue_config {
+      protocol = {
+        maildir_path = '/maildirs/{{ domain_part }}/{{ local_part }}',
+        dir_mode = tonumber('775', 8),
+        file_mode = tonumber('664', 8),
+      },
+    }
+  end
+end)
+```
+
+### Using Lua as a delivery protocol
+
+```lua
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if domain == 'webhook' then
+    -- Use the `make.webhook` event to handle delivery
+    -- of webhook log records
+    return kumo.make_queue_config {
+      protocol = {
+        custom_lua = {
+          -- this will cause an event called `make.webhook` to trigger.
+          -- You can pick any name for this event, so long as it doesn't
+          -- collide with a pre-defined event, and so long as you bind
+          -- to it with a kumo.on call
+          constructor = 'make.webhook',
+        },
+      },
+    }
+  end
+  return kumo.make_queue_config {}
+end)
+
+-- This event will be called each time we need to make a connection.
+-- It needs to return a lua object with a `send` method
+kumo.on('make.webhook', function(domain, tenant, campaign)
+  -- Create the connection object
+  local connection = {}
+
+  -- define a send method on the connection object.
+  -- The return value is the disposition string for a successful
+  -- delivery; that string will get logged in the resulting log record.
+  -- If the delivery failed, you can use `kumo.reject` to raise the
+  -- error with an appropriate 400 or 500 code.
+  -- 400 codes will be retried later. 500 codes will log a permanent
+  -- failure and no further delivery attempts will be made for the message.
+  function connection:send(message)
+    print(message:get_data())
+    if failed then
+      kumo.reject(400, 'failed for some reason')
+    end
+    return 'OK'
+  end
+
+  return connection
+end)
+```
+
+See [should_enqueue_log_record](../../events/should_enqueue_log_record.md) for
+a more complete example.
+
+#### Where the constructor's `(domain, tenant, campaign)` come from
+
+The constructor event (e.g. `make.webhook` above) is fired once per
+connection session, before any message is delivered through it. The
+`(domain, tenant, campaign)` arguments come from one of the scheduled
+queues that feeds the dispatcher's ready queue, captured at session
+start.
+
+Multiple scheduled queues can share the same Lua ready queue.
+Scheduled queues converge on the same ready queue when they all
+resolve to the same egress source, routing domain, and Lua
+constructor name. That can happen for many reasons — different
+`(domain, tenant, campaign)` triples that map to a common
+`routing_domain`, explicit routing via the `domain!routing_domain`
+syntax, scheduled queue names that happen to share components, or
+any `get_queue_config` implementation that yields the same
+`custom_lua.constructor` value for distinct inputs.
+
+When any of those produces fan-in, the constructor's arguments are
+*representative*: they reflect one scheduled queue currently
+feeding the session, but other messages delivered through the same
+session may have originated from different scheduled queues with
+different `(tenant, campaign)` values.
+
+If the connection setup itself depends on per-message values, use
+the constructor arguments only for one-time setup that is invariant
+across the queues sharing this constructor, and resolve per-message
+values inside `send` (or `send_batch`) using `message:get_meta` or
+[message:queue_name](../../message/queue_name.md):
+
+```lua
+kumo.on('make.webhook', function(domain, tenant, campaign)
+  local connection = {}
+  function connection:send(message)
+    -- Source of truth for this specific message:
+    local msg_tenant = message:get_meta 'tenant'
+    local msg_campaign = message:get_meta 'campaign'
+    -- ... use msg_tenant / msg_campaign for per-message routing ...
+    return 'OK'
+  end
+  return connection
+end)
+```
+
+
+

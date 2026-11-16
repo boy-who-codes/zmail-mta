@@ -1,0 +1,18 @@
+[package]
+name = "spool-util"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+chrono = {workspace=true, default-features=false, features=["now"]}
+clap = {workspace=true}
+flume = {workspace=true}
+hdrhistogram = {workspace=true}
+human_bytes = {workspace=true}
+incr_stats = {workspace=true}
+spool = {path="../spool", features=["rocksdb"]}
+tokio = {workspace=true, features=["full", "tracing"]}
+
+[lints]
+workspace = true

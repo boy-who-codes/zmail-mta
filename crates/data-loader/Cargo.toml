@@ -1,0 +1,25 @@
+[package]
+name = "data-loader"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["impl"]
+impl = ["dep:vaultrs", "dep:config", "dep:mlua", "dep:tokio"]
+
+[dependencies]
+anyhow = {workspace=true}
+config = {path="../config", optional=true}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"], optional=true}
+serde = {workspace=true}
+serde_bytes.workspace = true
+serde_json = {workspace=true}
+tokio = {workspace=true, features=["fs"], optional=true}
+vaultrs = {workspace=true, optional=true}
+
+[dev-dependencies]
+tokio = {workspace=true, features=["fs", "io-std", "process", "macros", "time", "io-util", "rt"]}
+which = {workspace=true}
+
+[lints]
+workspace = true

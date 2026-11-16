@@ -1,0 +1,25 @@
+[package]
+name = "kumo-prometheus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+async-stream = {workspace=true}
+crossbeam-utils.workspace = true
+futures = {workspace=true}
+linkme.workspace = true
+map_vec = {workspace=true}
+memchr = {workspace=true}
+parking_lot = {workspace=true}
+pastey = {workspace=true}
+prometheus = {workspace=true}
+serde.workspace = true
+serde_json = {workspace=true}
+tokio = {workspace=true, features=["rt", "time"]}
+
+[dev-dependencies]
+k9 = {workspace=true}
+
+[lints]
+workspace = true

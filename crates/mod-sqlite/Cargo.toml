@@ -1,0 +1,15 @@
+[package]
+name = "mod-sqlite"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+config = {path="../config"}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"]}
+serde_json = {workspace=true}
+sqlite = {workspace=true}
+tokio = {workspace=true, features=["rt", "tracing"]}
+
+[lints]
+workspace = true

@@ -1,0 +1,41 @@
+[package]
+name = "kumo-dkim"
+version = "0.3.0"
+authors = ["Sven Sauleau <sven@cloudflare.com>"]
+edition = "2021"
+description = "DKIM (RFC6376) implementation"
+repository = "https://github.com/cloudflare/dkim"
+categories = ["email"]
+keywords = ["email", "dkim", "authentification"]
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+bstr.workspace = true
+chrono = { workspace = true, default-features = false, features = ["clock", "std"] }
+data-encoding = {workspace=true}
+dns-resolver = {path="../dns-resolver"}
+ed25519-dalek = {workspace=true, features=["pkcs8", "pem"]}
+foreign-types = {workspace=true}
+indexmap = {workspace=true}
+mailparsing = { path="../mailparsing" }
+memchr = {workspace=true}
+nom.workspace = true
+openssl = { workspace=true }
+openssl-sys = { workspace=true }
+sha-1 = { workspace=true, features = ["oid"] }
+sha2 = { workspace = true, features = ["oid"] }
+thiserror = {workspace=true}
+tracing = {workspace=true}
+
+[dev-dependencies]
+criterion = {workspace=true}
+k9 = {workspace=true}
+tokio = { workspace=true, features = ["macros"] }
+
+[[bench]]
+name = "sign"
+harness = false
+
+[lints]
+workspace = true

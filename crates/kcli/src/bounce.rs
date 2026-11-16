@@ -1,0 +1,114 @@
+use clap::{ArgGroup, Parser};
+use kumo_api_client::KumoApiClient;
+use kumo_api_types::BounceV1Request;
+use reqwest::Url;
+use std::time::Duration;
+
+#[derive(Debug, Parser)]
+/// Administratively bounce messages in matching queues.
+///
+/// Each individual message that is bounced will generate a log
+/// record capturing the event and then be removed from the spool.
+///
+/// Make sure that you mean it, as there is no going back!
+///
+/// The bounce will be applied immediately to queued messages,
+/// (asynchronously with respect to the command!)
+/// and the directive will remain in effect for the duration
+/// specified, causing newly received messages or messages
+/// that were in a transient state at the time the directive
+/// was received, to also be bounced as they are placed
+/// back into the matching queue(s).
+///
+/// The totals printed by this command are often under-reported
+/// due to the asynchronous nature of the action.
+#[clap(
+    group(ArgGroup::new("selection")
+        .multiple(true)
+        .required(true)
+        .args(&["domain", "routing_domain", "campaign", "tenant", "everything", "queue"])),
+)]
+pub struct BounceCommand {
+    /// The domain name to match.
+    /// If omitted, any domains will match!
+    #[arg(long)]
+    domain: Option<String>,
+
+    /// The routing_domain name to match.
+    /// If omitted, any routing domain will match!
+    #[arg(long)]
+    routing_domain: Option<String>,
+
+    /// The campaign name to match.
+    /// If omitted, any campaigns will match!
+    #[arg(long)]
+    campaign: Option<String>,
+
+    /// The tenant name to match.
+    /// If omitted, any tenant will match!
+    #[arg(long)]
+    tenant: Option<String>,
+
+    /// Bounce specific scheduled queue names using their exact queue name(s).
+    /// Can be specified multiple times.
+    #[arg(long, conflicts_with_all=&["domain", "routing_domain", "campaign", "tenant"])]
+    queue: Vec<String>,
+
+    /// The reason to log in the delivery logs (each matching message will
+    /// bounce with an AdminBounce record) as well as in the list
+    /// of bounces.
+    #[arg(long)]
+    reason: String,
+
+    /// Purge all queues.
+    #[arg(long, conflicts_with_all=&["domain", "routing_domain", "campaign", "tenant", "queue"])]
+    everything: bool,
+
+    /// Do not generate AdminBounce delivery logs
+    #[arg(long)]
+    suppress_logging: bool,
+
+    /// The duration over which matching messages will continue to bounce.
+    /// The default is '5m'.
+    #[arg(long, value_parser=humantime::parse_duration)]
+    duration: Option<Duration>,
+}
+
+impl BounceCommand {
+    pub async fn run(&self, endpoint: &Url) -> anyhow::Result<()> {
+        if self.domain.is_none()
+            && self.campaign.is_none()
+            && self.tenant.is_none()
+            && self.routing_domain.is_none()
+            && self.queue.is_empty()
+            && !self.everything
+        {
+            anyhow::bail!(
+                "No domain, routing_domain, campaign or tenant was specified. \
+                 Use --everything if you intend to purge all queues"
+            );
+        }
+
+        let client = KumoApiClient::new(endpoint.clone());
+        let result = client
+            .admin_bounce_v1(&BounceV1Request {
+                campaign: self.campaign.clone(),
+                domain: self.domain.clone(),
+                routing_domain: self.routing_domain.clone(),
+                tenant: self.tenant.clone(),
+                reason: self.reason.clone(),
+                duration: self.duration,
+                expires: None,
+                suppress_logging: self.suppress_logging,
+                queue_names: self.queue.clone(),
+            })
+            .await?;
+
+        eprintln!(
+            "NOTE: the bounce is running async. Use the bounce-list command to review ongoing status!"
+        );
+        println!("{}", result.id);
+
+        Ok(())
+    }
+}

@@ -1,0 +1,171 @@
+use bstr::ByteSlice;
+use config::{from_lua_value, get_or_create_sub_module};
+use kumo_template::TemplateDialect;
+use mlua::Lua;
+
+pub fn register(lua: &Lua) -> anyhow::Result<()> {
+    let string_mod = get_or_create_sub_module(lua, "string")?;
+
+    string_mod.set(
+        "replace",
+        lua.create_function(move |_, (s, from, to): (String, String, String)| {
+            Ok(s.replace(&from, &to))
+        })?,
+    )?;
+
+    string_mod.set(
+        "replacen",
+        lua.create_function(
+            move |_, (s, from, to, count): (String, String, String, usize)| {
+                Ok(s.replacen(&from, &to, count))
+            },
+        )?,
+    )?;
+
+    string_mod.set(
+        "rsplit",
+        lua.create_function(move |_, (s, pattern): (String, String)| {
+            Ok(s.rsplit(&pattern)
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "rsplitn",
+        lua.create_function(move |_, (s, limit, pattern): (String, usize, String)| {
+            Ok(s.rsplitn(limit, &pattern)
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "starts_with",
+        lua.create_function(move |_, (s, pattern): (mlua::String, mlua::String)| {
+            Ok(s.as_bytes().starts_with_str(pattern.as_bytes()))
+        })?,
+    )?;
+
+    string_mod.set(
+        "ends_with",
+        lua.create_function(move |_, (s, pattern): (mlua::String, mlua::String)| {
+            Ok(s.as_bytes().ends_with_str(pattern.as_bytes()))
+        })?,
+    )?;
+
+    string_mod.set(
+        "split",
+        lua.create_function(move |_, (s, pattern): (String, String)| {
+            Ok(s.split(&pattern)
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "splitn",
+        lua.create_function(move |_, (s, limit, pattern): (String, usize, String)| {
+            Ok(s.splitn(limit, &pattern)
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "split_whitespace",
+        lua.create_function(move |_, s: String| {
+            Ok(s.split_whitespace()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "split_ascii_whitespace",
+        lua.create_function(move |_, s: String| {
+            Ok(s.split_ascii_whitespace()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>())
+        })?,
+    )?;
+
+    string_mod.set(
+        "trim",
+        lua.create_function(move |_, s: String| Ok(s.trim().to_string()))?,
+    )?;
+    string_mod.set(
+        "trim_end",
+        lua.create_function(move |_, s: String| Ok(s.trim_end().to_string()))?,
+    )?;
+    string_mod.set(
+        "trim_start",
+        lua.create_function(move |_, s: String| Ok(s.trim_start().to_string()))?,
+    )?;
+
+    string_mod.set(
+        "psl_domain",
+        lua.create_function(move |_, s: String| {
+            let n = psl_utils::normalize_domain(&s);
+            Ok(psl_utils::domain_str(&n).map(|s| s.to_string()))
+        })?,
+    )?;
+
+    string_mod.set(
+        "psl_domain_is_known",
+        lua.create_function(move |_, s: String| {
+            let n = psl_utils::normalize_domain(&s);
+            Ok(psl_utils::domain_is_known(&n))
+        })?,
+    )?;
+
+    string_mod.set(
+        "psl_suffix",
+        lua.create_function(move |_, s: String| {
+            let n = psl_utils::normalize_domain(&s);
+            Ok(psl_utils::suffix_str(&n).map(|s| s.to_string()))
+        })?,
+    )?;
+
+    string_mod.set(
+        "psl_suffix_is_known",
+        lua.create_function(move |_, s: String| {
+            let n = psl_utils::normalize_domain(&s);
+            Ok(psl_utils::suffix_is_known(&n))
+        })?,
+    )?;
+
+    string_mod.set(
+        "eval_template",
+        lua.create_function(
+            move |lua,
+                  (name, template, context, opt_dialect): (
+                String,
+                String,
+                mlua::Value,
+                mlua::Value,
+            )| {
+                let dialect: Option<TemplateDialect> = from_lua_value(lua, opt_dialect)?;
+                let engine =
+                    kumo_template::TemplateEngine::with_dialect(dialect.unwrap_or_default());
+                engine
+                    .render(&name, &template, context)
+                    .map_err(config::any_err)
+            },
+        )?,
+    )?;
+
+    string_mod.set(
+        "wrap",
+        lua.create_function(
+            move |lua, (text, soft, hard): (mlua::String, Option<usize>, Option<usize>)| {
+                let soft = soft.unwrap_or(75);
+                let hard = hard.unwrap_or(900);
+                let bytes = kumo_wrap::wrap_impl(&*text.as_bytes(), soft, hard);
+                lua.create_string(bytes.trim_end())
+            },
+        )?,
+    )?;
+
+    Ok(())
+}

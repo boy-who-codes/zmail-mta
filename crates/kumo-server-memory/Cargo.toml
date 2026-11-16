@@ -1,0 +1,26 @@
+[package]
+name = "kumo-server-memory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ahash.workspace = true
+anyhow = {workspace=true}
+backtrace.workspace = true
+humansize = {workspace=true}
+kumo-prometheus = {path="../kumo-prometheus"}
+linkme.workspace = true
+nix = {workspace=true, features=["resource", "feature"]}
+num-format.workspace = true
+parking_lot.workspace = true
+tikv-jemallocator = {workspace=true}
+tikv-jemalloc-ctl.workspace = true
+tikv-jemalloc-sys = {workspace=true}
+tokio = {workspace=true, features=["full", "tracing"]}
+tracing = {workspace=true}
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs = {workspace=true}
+
+[lints]
+workspace = true

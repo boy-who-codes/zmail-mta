@@ -1,0 +1,25 @@
+["default"]
+connection_limit = 10
+max_connection_rate = "100/min"
+max_deliveries_per_connection = 100
+max_message_rate = "100/s"
+
+["gmail.com"]
+connection_limit = 20
+max_connection_rate = "50/s"
+max_deliveries_per_connection = 100
+
+["yahoo.com"]
+connection_limit = 15
+max_connection_rate = "30/s"
+max_deliveries_per_connection = 50
+
+["outlook.com"]
+connection_limit = 20
+max_connection_rate = "40/s"
+max_deliveries_per_connection = 80
+
+["icloud.com"]
+connection_limit = 10
+max_connection_rate = "25/s"
+max_deliveries_per_connection = 50

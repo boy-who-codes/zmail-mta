@@ -1,0 +1,11 @@
+[package]
+name = "version-info"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+git2 = {workspace=true}
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "maildir"
+version = "0.7.0"
+authors = ["Kartikaya Gupta"]
+edition = "2021"
+license = "0BSD"
+
+description = "A simple library for maildir manipulation"
+readme = "README.md"
+keywords = ["maildir", "email", "rfc822", "mime"]
+categories = ["email", "filesystem"]
+exclude = [".gitignore", ".github/**"]
+
+[badges]
+maintenance = { status = "passively-maintained" }
+
+[dependencies]
+chrono = {workspace=true, default-features=false}
+dir-probe = {path="../dir-probe"}
+gethostname = {workspace=true}
+mailparsing = { path="../mailparsing" }
+
+[dev-dependencies]
+percent-encoding = {workspace=true}
+tempfile = {workspace=true}
+walkdir = {workspace=true}
+
+[lints]
+workspace = true

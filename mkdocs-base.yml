@@ -1,0 +1,109 @@
+copyright: Copyright &copy; 2023 Kumo Corp
+site_name: KumoMTA Docs
+site_url: https://docs.kumomta.com
+site_description: Documentation for KumoMTA
+repo_url: https://github.com/KumoCorp/kumomta
+repo_name: KumoCorp/kumomta
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: gh_pages
+strict: true
+theme:
+  name: material
+  logo: assets/images/kumo-logo.png
+  custom_dir: docs/overrides
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: orange
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: orange
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - content.tabs.link
+    - navigation.footer
+    - navigation.indexes
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+plugins:
+  - search
+  - social:
+      enabled: !ENV [CARDS, False]
+  - git-revision-date-localized:
+      enabled: !ENV [GIT_DATES, False]
+      enable_creation_date: true
+      type: timeago
+      # Don't emit warnings for our generated files that have no git log,
+      # because we run overall in strict mode and those warnings would
+      # be promoted to errors
+      strict: false
+      # Don't fatal out for the rustapi docs when they are served
+      # out of a cache dir that is not directly within the repo
+      fallback_to_build_date: true
+  - macros:
+      module_name: mkdocs_macros
+  - exclude:
+      glob:
+        - "**/_index.md"
+        - "generate_toc.py"
+        - "build.sh"
+        - "SUMMARY.md"
+  - tags:
+
+extra_css:
+  - style.css
+extra_javascript:
+  - javascript/fix-codeblock-console-copy-button.js
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - def_list
+  - attr_list
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: KumoCorp
+      repo: kumomta
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - assets
+        - docs
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/KumoCorp/kumomta
+  analytics:
+    provider: custom
+    property: foobar

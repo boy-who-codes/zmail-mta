@@ -1,0 +1,11 @@
+mod kumod;
+mod kumoproxy;
+mod logging;
+mod rabbit;
+mod test;
+mod tsa;
+mod webhook;
+
+fn main() {
+    println!("Run me via `cargo nextest run` or `cargo test`");
+}

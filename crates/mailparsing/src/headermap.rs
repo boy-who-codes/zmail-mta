@@ -1,0 +1,234 @@
+use crate::{
+    AddressList, AuthenticationResults, Header, MailParsingError, Mailbox, MailboxList, MessageID,
+    MimeParameters, Result, SharedString,
+};
+use bstr::BString;
+use chrono::{DateTime, FixedOffset, TimeZone};
+use pastey::paste;
+
+/// Represents an ordered list of headers.
+/// Note that there may be multiple headers with the same name.
+/// Derefs to the underlying `Vec<Header>` for mutation,
+/// but provides some accessors for retrieving headers by name.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HeaderMap<'a> {
+    pub(crate) headers: Vec<Header<'a>>,
+}
+
+impl<'a> std::ops::Deref for HeaderMap<'a> {
+    type Target = Vec<Header<'a>>;
+    fn deref(&self) -> &Vec<Header<'a>> {
+        &self.headers
+    }
+}
+
+impl<'a> std::ops::DerefMut for HeaderMap<'a> {
+    fn deref_mut(&mut self) -> &mut Vec<Header<'a>> {
+        &mut self.headers
+    }
+}
+
+pub trait EncodeHeaderValue {
+    fn encode_value(&self) -> SharedString<'static>;
+    fn as_header(&self, _name: &[u8]) -> Option<Header<'static>> {
+        None
+    }
+}
+
+impl EncodeHeaderValue for &[u8] {
+    fn encode_value(&self) -> SharedString<'static> {
+        unimplemented!();
+    }
+
+    fn as_header(&self, name: &[u8]) -> Option<Header<'static>> {
+        Some(Header::new_unstructured(name.to_vec(), self.to_vec()))
+    }
+}
+
+impl EncodeHeaderValue for &str {
+    fn encode_value(&self) -> SharedString<'static> {
+        unimplemented!();
+    }
+
+    fn as_header(&self, name: &[u8]) -> Option<Header<'static>> {
+        Some(Header::new_unstructured(name.to_vec(), self.to_string()))
+    }
+}
+
+impl<T: TimeZone> EncodeHeaderValue for DateTime<T>
+where
+    <T as TimeZone>::Offset: std::fmt::Display,
+{
+    fn encode_value(&self) -> SharedString<'static> {
+        crate::format_rfc2822_date(self.clone()).into()
+    }
+}
+
+macro_rules! accessor {
+    ($func_name:ident, $header_name:literal, $ty:path, $parser:ident) => {
+        pub fn $func_name(&self) -> Result<Option<$ty>> {
+            match self.get_first($header_name) {
+                None => Ok(None),
+                Some(header) => Ok(Some(header.$parser().map_err(|error| {
+                    MailParsingError::InvalidHeaderValueDuringGet {
+                        header_name: $header_name.to_string(),
+                        error: error.into(),
+                    }
+                })?)),
+            }
+        }
+
+        paste! {
+            pub fn [<set_ $func_name>](&mut self, v: impl EncodeHeaderValue) -> Result<()> {
+                if let Some(idx) = self
+                    .headers
+                    .iter()
+                    .position(|header| header.get_name().eq_ignore_ascii_case($header_name.as_bytes()))
+                {
+                    if let Some(hdr) = v.as_header(self.headers[idx].get_name()) {
+                        hdr.$parser().map_err(|error| {
+                            MailParsingError::InvalidHeaderValueDuringAssignment {
+                                header_name: $header_name.to_string(),
+                                error: error.into(),
+                            }
+                        })?;
+                        self.headers[idx] = hdr;
+                    } else {
+                        self.headers[idx].assign(v);
+                    }
+                } else {
+                    if let Some(hdr) = v.as_header($header_name.as_bytes()) {
+                        hdr.$parser().map_err(|error| {
+                            MailParsingError::InvalidHeaderValueDuringAssignment {
+                                header_name: $header_name.to_string(),
+                                error: error.into(),
+                            }
+                        })?;
+                        self.headers.push(hdr);
+                    } else {
+                        self.headers
+                            .push(Header::with_name_value($header_name, v.encode_value()));
+                    }
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
+impl<'a> HeaderMap<'a> {
+    pub fn new(headers: Vec<Header<'a>>) -> Self {
+        Self { headers }
+    }
+
+    pub fn to_owned(&'a self) -> HeaderMap<'static> {
+        HeaderMap {
+            headers: self.headers.iter().map(|h: &Header| h.to_owned()).collect(),
+        }
+    }
+
+    pub fn remove_all_named(&mut self, name: &str) {
+        self.headers
+            .retain(|hdr| !hdr.get_name().eq_ignore_ascii_case(name.as_bytes()));
+    }
+
+    pub fn prepend<V: Into<SharedString<'a>>>(&mut self, name: &str, v: V) {
+        self.headers
+            .insert(0, Header::new_unstructured(name.to_string(), v));
+    }
+
+    pub fn append_header<V: Into<SharedString<'a>>>(&mut self, name: &str, v: V) {
+        self.headers
+            .push(Header::new_unstructured(name.to_string(), v));
+    }
+
+    pub fn get_first(&'a self, name: &str) -> Option<&'a Header<'a>> {
+        self.iter_named(name).next()
+    }
+
+    pub fn get_first_mut(&'a mut self, name: &str) -> Option<&'a mut Header<'a>> {
+        self.iter_named_mut(name).next()
+    }
+
+    pub fn get_last(&'a self, name: &str) -> Option<&'a Header<'a>> {
+        self.iter_named(name).next_back()
+    }
+
+    pub fn get_last_mut(&'a mut self, name: &str) -> Option<&'a mut Header<'a>> {
+        self.iter_named_mut(name).next_back()
+    }
+
+    pub fn iter_named<'name>(
+        &'a self,
+        name: &'name str,
+    ) -> impl DoubleEndedIterator<Item = &'a Header<'a>> + 'name
+    where
+        'a: 'name,
+    {
+        self.headers
+            .iter()
+            .filter(|header| header.get_name().eq_ignore_ascii_case(name.as_bytes()))
+    }
+
+    pub fn iter_named_mut<'name>(
+        &'a mut self,
+        name: &'name str,
+    ) -> impl DoubleEndedIterator<Item = &'a mut Header<'a>> + 'name
+    where
+        'a: 'name,
+    {
+        self.headers
+            .iter_mut()
+            .filter(|header| header.get_name().eq_ignore_ascii_case(name.as_bytes()))
+    }
+
+    accessor!(from, "From", MailboxList, as_mailbox_list);
+    accessor!(resent_from, "Resent-From", MailboxList, as_mailbox_list);
+
+    accessor!(to, "To", AddressList, as_address_list);
+    accessor!(reply_to, "Reply-To", AddressList, as_address_list);
+    accessor!(cc, "Cc", AddressList, as_address_list);
+    accessor!(bcc, "Bcc", AddressList, as_address_list);
+    accessor!(resent_to, "Resent-To", AddressList, as_address_list);
+    accessor!(resent_cc, "Resent-Cc", AddressList, as_address_list);
+    accessor!(resent_bcc, "Resent-Bcc", AddressList, as_address_list);
+
+    accessor!(date, "Date", DateTime<FixedOffset>, as_date);
+
+    accessor!(sender, "Sender", Mailbox, as_mailbox);
+    accessor!(resent_sender, "Resent-Sender", Mailbox, as_mailbox);
+
+    accessor!(message_id, "Message-ID", MessageID, as_message_id);
+    accessor!(content_id, "Content-ID", MessageID, as_content_id);
+    accessor!(references, "References", Vec<MessageID>, as_message_id_list);
+
+    accessor!(subject, "Subject", BString, as_unstructured);
+    accessor!(comments, "Comments", BString, as_unstructured);
+    accessor!(
+        content_transfer_encoding,
+        "Content-Transfer-Encoding",
+        MimeParameters,
+        as_content_transfer_encoding
+    );
+    accessor!(mime_version, "MIME-Version", BString, as_unstructured);
+    accessor!(
+        content_disposition,
+        "Content-Disposition",
+        MimeParameters,
+        as_content_disposition
+    );
+
+    accessor!(
+        content_type,
+        "Content-Type",
+        MimeParameters,
+        as_content_type
+    );
+
+    accessor!(
+        authentication_results,
+        "Authentication-Results",
+        AuthenticationResults,
+        as_authentication_results
+    );
+}

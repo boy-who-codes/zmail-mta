@@ -1,0 +1,938 @@
+use async_trait::async_trait;
+use hickory_resolver::net::{DnsError as NetDnsError, NetError};
+use hickory_resolver::proto::dnssec::Proof;
+use hickory_resolver::proto::op::ResponseCode;
+use hickory_resolver::proto::rr::rdata::{A, AAAA, PTR, TXT};
+#[cfg(feature = "unbound")]
+use hickory_resolver::proto::rr::DNSClass;
+use hickory_resolver::proto::rr::{
+    LowerName, Name, RData, RecordData, RecordSet, RecordType, RrKey,
+};
+use hickory_resolver::proto::serialize::txt::Parser;
+use hickory_resolver::TokioResolver;
+#[cfg(feature = "unbound")]
+use libunbound::{AsyncContext, Context};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::net::IpAddr;
+use std::str::FromStr;
+use std::time::{Duration, Instant};
+use thiserror::Error;
+
+/// Negative-cache TTL, in seconds, applied when an answer has no TTL.
+pub(crate) const DEFAULT_NEGATIVE_TTL_SECS: u32 = 60;
+
+pub struct IpDisplay {
+    pub ip: IpAddr,
+    pub reverse: bool,
+}
+
+impl fmt::Display for IpDisplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ip {
+            IpAddr::V4(v4) => {
+                let mut bytes = v4.octets();
+                if self.reverse {
+                    bytes.reverse();
+                }
+                let mut first = true;
+                for byte in bytes {
+                    if !first {
+                        f.write_str(".")?;
+                    }
+                    write!(f, "{byte}")?;
+                    first = false;
+                }
+                Ok(())
+            }
+            IpAddr::V6(v6) => {
+                let mut bytes = v6.octets();
+                if self.reverse {
+                    bytes.reverse();
+                }
+                let mut first = true;
+                for byte in bytes {
+                    if !first {
+                        f.write_str(".")?;
+                    }
+                    let (upper, lower) = (byte >> 4, byte & 0xf);
+                    if self.reverse {
+                        write!(f, "{lower:x}.{upper:x}")?;
+                    } else {
+                        write!(f, "{upper:x}.{lower:x}")?;
+                    }
+                    first = false;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+pub fn ptr_host(ip: IpAddr) -> String {
+    let mut out = reverse_ip(ip);
+    out.push_str(match ip {
+        IpAddr::V4(_) => ".in-addr.arpa",
+        IpAddr::V6(_) => ".ip6.arpa",
+    });
+    out
+}
+
+pub fn reverse_ip(ip: IpAddr) -> String {
+    IpDisplay { ip, reverse: true }.to_string()
+}
+
+#[derive(Debug)]
+pub struct Answer {
+    pub canon_name: Option<String>,
+    pub records: Vec<RData>,
+    pub nxdomain: bool,
+    pub secure: bool,
+    pub bogus: bool,
+    pub why_bogus: Option<String>,
+    pub expires: Instant,
+    pub response_code: ResponseCode,
+}
+
+impl Answer {
+    pub fn as_txt(&self) -> Vec<String> {
+        let mut result = vec![];
+        for r in &self.records {
+            if let RData::TXT(txt) = r {
+                let mut joined = String::new();
+                for t in txt.txt_data.iter() {
+                    joined.push_str(&String::from_utf8_lossy(t));
+                }
+                result.push(joined);
+            }
+        }
+        result
+    }
+
+    pub fn as_addr(&self) -> Vec<IpAddr> {
+        let mut result = vec![];
+        for r in &self.records {
+            match r {
+                RData::A(a) => result.push(a.0.into()),
+                RData::AAAA(a) => result.push(a.0.into()),
+                _ => {}
+            }
+        }
+        result
+    }
+
+    /// Returns a view of the answer that is compatible
+    /// with snapshot testing.
+    pub fn into_answer_view(self) -> AnswerView {
+        AnswerView {
+            canon_name: self.canon_name,
+            records: self.records,
+            nxdomain: self.nxdomain,
+            secure: self.secure,
+            bogus: self.bogus,
+            why_bogus: self.why_bogus,
+            response_code: self.response_code,
+        }
+    }
+}
+
+/// A view of an Answer that is compatible with snapshot
+/// testing because it doesn't include the variable `expires`
+/// field found in Answer.
+#[derive(Debug)]
+pub struct AnswerView {
+    pub canon_name: Option<String>,
+    pub records: Vec<RData>,
+    pub nxdomain: bool,
+    pub secure: bool,
+    pub bogus: bool,
+    pub why_bogus: Option<String>,
+    pub response_code: ResponseCode,
+}
+
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum DnsError {
+    #[error("invalid DNS name: {0}")]
+    InvalidName(String),
+    #[error("DNS: {0}")]
+    ResolveFailed(String),
+}
+
+impl DnsError {
+    pub(crate) fn from_resolve(name: &impl fmt::Display, err: NetError) -> Self {
+        DnsError::ResolveFailed(format!("failed to query DNS for {name}: {err}"))
+    }
+}
+
+fn no_records(err: &NetError) -> Option<&hickory_resolver::net::NoRecords> {
+    match err {
+        NetError::Dns(NetDnsError::NoRecordsFound(nr)) => Some(nr),
+        _ => None,
+    }
+}
+
+/// Summarize the DNSSEC status of a set of records from their validation
+/// proofs, returning `(secure, bogus)`. An answer is secure only when it
+/// carries at least one record and every record validated as secure; it is
+/// bogus when any record failed validation. With validation disabled every
+/// record is Indeterminate, so the result is simply not secure. This applies
+/// both to a positive answer (its answer section) and to a securely denied
+/// answer (the authority section that proves the absence).
+fn dnssec_status(proofs: impl Iterator<Item = Proof>) -> (bool, bool) {
+    let mut any = false;
+    let mut all_secure = true;
+    let mut bogus = false;
+    for proof in proofs {
+        any = true;
+        all_secure &= proof == Proof::Secure;
+        bogus |= proof == Proof::Bogus;
+    }
+    (any && all_secure, bogus)
+}
+
+#[async_trait]
+pub trait Resolver: Send + Sync + 'static {
+    async fn resolve_ip(&self, host: &str) -> Result<Vec<IpAddr>, DnsError>;
+
+    async fn resolve_mx(&self, host: &str) -> Result<Vec<Name>, DnsError>;
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError>;
+
+    async fn resolve_txt(&self, name: &str) -> Result<Answer, DnsError> {
+        let name = Name::from_str_relaxed(name)
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {name}: {err}")))?;
+        self.resolve(name, RecordType::TXT).await
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError>;
+}
+
+#[async_trait]
+impl Resolver for Box<dyn Resolver> {
+    async fn resolve_ip(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
+        (**self).resolve_ip(host).await
+    }
+
+    async fn resolve_mx(&self, host: &str) -> Result<Vec<Name>, DnsError> {
+        (**self).resolve_mx(host).await
+    }
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError> {
+        (**self).resolve_ptr(ip).await
+    }
+
+    async fn resolve_txt(&self, name: &str) -> Result<Answer, DnsError> {
+        (**self).resolve_txt(name).await
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError> {
+        (**self).resolve(name, rrtype).await
+    }
+}
+
+#[derive(Debug, Default)]
+struct TestZone {
+    records: BTreeMap<RrKey, RecordSet>,
+    /// Whether answers from this zone should be reported as DNSSEC validated.
+    secure: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct TestResolver {
+    zones: BTreeMap<Name, TestZone>,
+    /// Owner names for which any lookup should return SERVFAIL, used to model
+    /// resolution failures (e.g. for DANE downgrade-resistance tests).
+    servfail: BTreeSet<Name>,
+    /// Owner names whose answers are flagged DNSSEC-bogus, used to model a
+    /// validating resolver returning a forged or tampered RRset. The records
+    /// of the zone, if any, are still returned alongside the flag: a test can
+    /// use that to cover both a bogus answer with records and a bogus answer
+    /// with none.
+    bogus: BTreeSet<Name>,
+}
+
+impl TestResolver {
+    /// Add an insecure (non-DNSSEC) zone.
+    pub fn with_zone(self, zone: &str) -> Result<Self, String> {
+        self.add_zone(zone, false)
+    }
+
+    /// Add a zone whose answers are reported as DNSSEC validated (secure).
+    pub fn with_secure_zone(self, zone: &str) -> Result<Self, String> {
+        self.add_zone(zone, true)
+    }
+
+    fn add_zone(mut self, zone: &str, secure: bool) -> Result<Self, String> {
+        let (mut name, records) = Parser::new(zone, None, None)
+            .parse()
+            .map_err(|err| format!("{err:#}"))?;
+        // The parser can create results with varying FQDN-ness, so let's
+        // ensure that they're all marked as FQDN, otherwise our get()
+        // function can fail to resolve data from the zone.
+        name.set_fqdn(true);
+        let fqdn_records = records
+            .into_iter()
+            .map(|(key, value)| {
+                if key.name().is_fqdn() {
+                    (key, value)
+                } else {
+                    let mut name: Name = key.name().into();
+                    name.set_fqdn(true);
+                    (RrKey::new(LowerName::new(&name), key.record_type), value)
+                }
+            })
+            .collect();
+        self.zones.insert(
+            name,
+            TestZone {
+                records: fqdn_records,
+                secure,
+            },
+        );
+        Ok(self)
+    }
+
+    /// Cause any lookup for `name` to return SERVFAIL.
+    pub fn with_servfail(mut self, name: &str) -> Self {
+        let mut name = Name::from_str_relaxed(name)
+            .expect("valid name passed to with_servfail")
+            .to_lowercase();
+        name.set_fqdn(true);
+        self.servfail.insert(name);
+        self
+    }
+
+    /// Makes any lookup for `name` return its normal records (if any) marked
+    /// DNSSEC-bogus, as a validating resolver would for a forged or tampered
+    /// RRset.
+    pub fn with_bogus(mut self, name: &str) -> Self {
+        let mut name = Name::from_str_relaxed(name)
+            .expect("valid name passed to with_bogus")
+            .to_lowercase();
+        name.set_fqdn(true);
+        self.bogus.insert(name);
+        self
+    }
+
+    pub fn with_txt(self, domain: &str, value: impl Into<String>) -> Self {
+        self.with_txt_multiple(domain, vec![value.into()])
+    }
+
+    /// Add multiple separate TXT records for the specified domain
+    pub fn with_txt_multiple(mut self, domain: &str, value: Vec<String>) -> Self {
+        let fqdn = format!("{}.", domain);
+        let authority = Name::from_str_relaxed(&fqdn).unwrap();
+        let key = RrKey {
+            name: LowerName::from_str(&fqdn).unwrap(),
+            record_type: RecordType::TXT,
+        };
+
+        let mut records = RecordSet::new(authority.clone(), RecordType::TXT, 0);
+        for item in value {
+            records.add_rdata(RData::TXT(TXT::new(vec![item])));
+        }
+        self.zones
+            .entry(authority)
+            .or_default()
+            .records
+            .insert(key, records);
+
+        self
+    }
+
+    fn get(&self, full: &Name, record_type: RecordType) -> Result<Answer, DnsError> {
+        let mut answer = self.get_impl(full, record_type)?;
+        let mut full_fqdn = full.clone();
+        full_fqdn.set_fqdn(true);
+        if self.bogus.contains(&full_fqdn.to_lowercase()) {
+            answer.bogus = true;
+            answer.why_bogus = Some("test bogus".to_string());
+        }
+        Ok(answer)
+    }
+
+    fn get_impl(&self, full: &Name, record_type: RecordType) -> Result<Answer, DnsError> {
+        let mut full_fqdn = full.clone();
+        full_fqdn.set_fqdn(true);
+
+        if self.servfail.contains(&full_fqdn.to_lowercase()) {
+            return Ok(Answer {
+                canon_name: None,
+                records: vec![],
+                nxdomain: false,
+                secure: false,
+                bogus: false,
+                why_bogus: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                response_code: ResponseCode::ServFail,
+            });
+        }
+
+        let mut authority = full_fqdn.clone();
+
+        let zone = loop {
+            if let Some(zone) = self.zones.get(&authority) {
+                break zone;
+            };
+
+            if authority.num_labels() > 1 {
+                authority = authority.base_name();
+                continue;
+            }
+
+            return Ok(Answer {
+                canon_name: None,
+                records: vec![],
+                nxdomain: true,
+                secure: false,
+                bogus: false,
+                why_bogus: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                response_code: ResponseCode::NXDomain,
+            });
+        };
+
+        let records = zone.records.get(&RrKey {
+            name: LowerName::from(&full_fqdn),
+            record_type,
+        });
+
+        let Some(records) = records else {
+            // Follow a single CNAME for non-CNAME queries, mirroring how a
+            // recursive resolver expands aliases. The DNSSEC secure status of
+            // the overall answer is the AND of every step, so a secure alias
+            // targeting an insecure zone yields an insecure address answer
+            // (while an explicit CNAME-type query still reports the alias's own
+            // secure bit, since it matches a record here and never reaches this
+            // branch).
+            if record_type != RecordType::CNAME {
+                if let Some(cname_rs) = zone.records.get(&RrKey {
+                    name: LowerName::from(&full_fqdn),
+                    record_type: RecordType::CNAME,
+                }) {
+                    if let Some(target) =
+                        cname_rs
+                            .records_without_rrsigs()
+                            .find_map(|r| match &r.data {
+                                RData::CNAME(cname) => Some(cname.0.clone()),
+                                _ => None,
+                            })
+                    {
+                        let mut target_answer = self.get(&target, record_type)?;
+                        target_answer.canon_name = Some(target.to_ascii());
+                        target_answer.secure = target_answer.secure && zone.secure;
+                        return Ok(target_answer);
+                    }
+                }
+            }
+
+            return Ok(Answer {
+                canon_name: None,
+                records: vec![],
+                nxdomain: false,
+                secure: zone.secure,
+                bogus: false,
+                why_bogus: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                response_code: ResponseCode::NoError,
+            });
+        };
+
+        Ok(Answer {
+            canon_name: None,
+            records: records
+                .records_without_rrsigs()
+                .map(|r| r.data.clone())
+                .collect(),
+            nxdomain: false,
+            secure: zone.secure,
+            bogus: false,
+            why_bogus: None,
+            expires: Instant::now() + Duration::from_secs(60),
+            response_code: ResponseCode::NoError,
+        })
+    }
+}
+
+#[async_trait]
+impl Resolver for TestResolver {
+    async fn resolve_ip(&self, full: &str) -> Result<Vec<IpAddr>, DnsError> {
+        let name = Name::from_str_relaxed(full)
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {full}: {err}")))?;
+
+        let mut values = vec![];
+        let answer = self.get(&name, RecordType::A)?;
+        for record in answer.records {
+            let a = A::try_borrow(&record).unwrap();
+            values.push(IpAddr::V4(a.0));
+        }
+
+        let answer = self.get(&name, RecordType::AAAA)?;
+        for record in answer.records {
+            let a = AAAA::try_borrow(&record).unwrap();
+            values.push(IpAddr::V6(a.0));
+        }
+
+        Ok(values)
+    }
+
+    async fn resolve_mx(&self, full: &str) -> Result<Vec<Name>, DnsError> {
+        let name = Name::from_str_relaxed(full)
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {full}: {err}")))?;
+
+        let mut values = vec![];
+        let answer = self.get(&name, RecordType::MX)?;
+        for record in answer.records {
+            if let RData::MX(mx) = record {
+                values.push(mx.exchange.clone());
+            }
+        }
+
+        Ok(values)
+    }
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError> {
+        let name = ptr_host(ip);
+        let name = Name::from_str_relaxed(ptr_host(ip))
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {name}: {err}")))?;
+
+        let mut values = vec![];
+        let answer = self.get(&name, RecordType::PTR)?;
+        for record in answer.records {
+            match PTR::try_borrow(&record) {
+                Some(ptr) => values.push(ptr.0.clone()),
+                None => {
+                    println!("invalid record found for PTR record for {ip}");
+                    return Err(DnsError::ResolveFailed(format!(
+                        "invalid record found for PTR record for {ip}"
+                    )));
+                }
+            };
+        }
+
+        Ok(values)
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError> {
+        self.get(&name, rrtype)
+    }
+}
+
+#[cfg(feature = "unbound")]
+pub struct UnboundResolver {
+    cx: AsyncContext,
+}
+
+#[cfg(feature = "unbound")]
+impl UnboundResolver {
+    pub fn new() -> Result<Self, libunbound::Error> {
+        // This resolves directly against the root
+        let context = Context::new()?;
+        // and enables DNSSEC
+        context.add_builtin_trust_anchors()?;
+        Ok(Self {
+            cx: context.into_async()?,
+        })
+    }
+}
+
+#[cfg(feature = "unbound")]
+#[async_trait]
+impl Resolver for UnboundResolver {
+    async fn resolve_ip(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
+        let (a, aaaa) = tokio::join!(
+            self.cx.resolve(host, RecordType::A, DNSClass::IN),
+            self.cx.resolve(host, RecordType::AAAA, DNSClass::IN),
+        );
+
+        let mut records = vec![];
+        match (a, aaaa) {
+            (Ok(a), Ok(aaaa)) => {
+                records.extend(a.rdata().filter_map(|r| match r {
+                    Ok(RData::A(a)) => Some(IpAddr::from(a.0)),
+                    _ => None,
+                }));
+                records.extend(aaaa.rdata().filter_map(|r| match r {
+                    Ok(RData::AAAA(aaaa)) => Some(IpAddr::from(aaaa.0)),
+                    _ => None,
+                }));
+            }
+            (Ok(a), Err(_)) => {
+                records.extend(a.rdata().filter_map(|r| match r {
+                    Ok(RData::A(a)) => Some(IpAddr::from(a.0)),
+                    _ => None,
+                }));
+            }
+            (Err(_), Ok(aaaa)) => {
+                records.extend(aaaa.rdata().filter_map(|r| match r {
+                    Ok(RData::AAAA(aaaa)) => Some(IpAddr::from(aaaa.0)),
+                    _ => None,
+                }));
+            }
+            (Err(err), Err(_)) => {
+                return Err(DnsError::ResolveFailed(format!(
+                    "failed to query DNS for {host}: {err}"
+                )))
+            }
+        }
+
+        Ok(records)
+    }
+
+    async fn resolve_mx(&self, host: &str) -> Result<Vec<Name>, DnsError> {
+        let answer = self
+            .cx
+            .resolve(host, RecordType::A, DNSClass::IN)
+            .await
+            .map_err(|err| {
+                DnsError::ResolveFailed(format!("failed to query DNS for {host}: {err}"))
+            })?;
+
+        Ok(answer
+            .rdata()
+            .filter_map(|r| match r {
+                Ok(RData::MX(mx)) => Some(mx.exchange.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError> {
+        let name = ptr_host(ip);
+        let answer = self
+            .cx
+            .resolve(&name, RecordType::PTR, DNSClass::IN)
+            .await
+            .map_err(|err| {
+                DnsError::ResolveFailed(format!("failed to query DNS for {name}: {err}"))
+            })?;
+
+        Ok(answer
+            .rdata()
+            .filter_map(|r| match r {
+                Ok(RData::PTR(ptr)) => Some(ptr.0.clone()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError> {
+        let name = name.to_ascii();
+        let answer = self
+            .cx
+            .resolve(&name, rrtype, DNSClass::IN)
+            .await
+            .map_err(|err| {
+                DnsError::ResolveFailed(format!("failed to query DNS for {name}: {err}"))
+            })?;
+
+        let mut records = vec![];
+        for r in answer.rdata() {
+            if let Ok(r) = r {
+                records.push(r);
+            }
+        }
+
+        Ok(Answer {
+            canon_name: answer.canon_name().map(|s| s.to_string()),
+            records,
+            nxdomain: answer.nxdomain(),
+            secure: answer.secure(),
+            bogus: answer.bogus(),
+            why_bogus: answer.why_bogus().map(|s| s.to_string()),
+            response_code: answer.rcode(),
+            expires: Instant::now() + Duration::from_secs(answer.ttl() as u64),
+        })
+    }
+}
+
+#[cfg(feature = "unbound")]
+impl From<AsyncContext> for UnboundResolver {
+    fn from(cx: AsyncContext) -> Self {
+        Self { cx }
+    }
+}
+
+pub struct HickoryResolver {
+    inner: TokioResolver,
+}
+
+impl HickoryResolver {
+    pub fn new() -> Result<Self, NetError> {
+        Ok(Self {
+            inner: TokioResolver::builder_tokio()?.build()?,
+        })
+    }
+
+    /// Builds a resolver that queries `server` over both UDP and TCP on port
+    /// 53, bypassing the system resolver. TCP matters because responses that
+    /// exceed the UDP size limit (large TXT RRsets, DNSKEY/RRSIG) truncate
+    /// over UDP. With `validate` set, answers are DNSSEC-validated.
+    #[cfg(feature = "live-dns-tests")]
+    pub fn for_live_test(server: &str, validate: bool) -> Self {
+        use hickory_resolver::config::{
+            ConnectionConfig, NameServerConfig, ProtocolConfig, ResolverConfig,
+        };
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+
+        let mut udp = ConnectionConfig::new(ProtocolConfig::Udp);
+        udp.port = 53;
+        let mut tcp = ConnectionConfig::new(ProtocolConfig::Tcp);
+        tcp.port = 53;
+        let config = ResolverConfig::from_parts(
+            None,
+            vec![],
+            vec![NameServerConfig::new(
+                server.parse().expect("server must be a valid IP address"),
+                true,
+                vec![udp, tcp],
+            )],
+        );
+        let mut builder =
+            TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
+        builder.options_mut().validate = validate;
+        Self::from(builder.build().expect("failed to build resolver"))
+    }
+}
+
+#[async_trait]
+impl Resolver for HickoryResolver {
+    async fn resolve_ip(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
+        let name = Name::from_str_relaxed(host)
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {host}: {err}")))?;
+
+        match self.inner.lookup_ip(name.clone()).await {
+            Ok(result) => Ok(result.iter().collect()),
+            Err(err) => match no_records(&err) {
+                Some(_) => Ok(vec![]),
+                None => Err(DnsError::from_resolve(&name, err)),
+            },
+        }
+    }
+
+    async fn resolve_mx(&self, host: &str) -> Result<Vec<Name>, DnsError> {
+        let name = Name::from_str_relaxed(host)
+            .map_err(|err| DnsError::InvalidName(format!("invalid name {host}: {err}")))?;
+
+        match self.inner.mx_lookup(name.clone()).await {
+            Ok(result) => Ok(result
+                .answers()
+                .iter()
+                .filter_map(|r| match &r.data {
+                    RData::MX(mx) => Some(mx.exchange.clone()),
+                    _ => None,
+                })
+                .collect()),
+            Err(err) => match no_records(&err) {
+                Some(_) => Ok(vec![]),
+                None => Err(DnsError::from_resolve(&name, err)),
+            },
+        }
+    }
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError> {
+        match self.inner.reverse_lookup(ip).await {
+            Ok(result) => Ok(result
+                .answers()
+                .iter()
+                .filter_map(|r| match &r.data {
+                    RData::PTR(ptr) => Some(ptr.0.clone()),
+                    _ => None,
+                })
+                .collect()),
+            Err(err) => match no_records(&err) {
+                Some(_) => Ok(vec![]),
+                None => Err(DnsError::from_resolve(&ip, err)),
+            },
+        }
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError> {
+        match self.inner.lookup(name.clone(), rrtype).await {
+            Ok(result) => {
+                let expires = result.valid_until();
+                let answers = result.answers();
+                // Surface bogus so that callers (e.g. DANE) can defer rather
+                // than downgrade.
+                let (secure, bogus) = dnssec_status(answers.iter().map(|r| r.proof));
+                let records = answers.iter().map(|r| r.data.clone()).collect();
+                Ok(Answer {
+                    canon_name: None,
+                    records,
+                    nxdomain: false,
+                    secure,
+                    bogus,
+                    why_bogus: None,
+                    expires,
+                    response_code: ResponseCode::NoError,
+                })
+            }
+            Err(err) => match no_records(&err) {
+                Some(no_records) => {
+                    // A securely denied answer (NODATA/NXDOMAIN in a signed
+                    // zone) is proven by DNSSEC-validated authority records
+                    // (SOA/NSEC/RRSIG); derive its secure/bogus status from
+                    // those just as we do for a positive answer, so that a
+                    // securely proven "no MX" can still engage DANE for the
+                    // implicit MX.
+                    let authorities = no_records.authorities.as_deref().unwrap_or(&[]);
+                    let (secure, bogus) = dnssec_status(authorities.iter().map(|r| r.proof));
+                    Ok(Answer {
+                        canon_name: None,
+                        records: vec![],
+                        nxdomain: no_records.response_code == ResponseCode::NXDomain,
+                        secure,
+                        bogus,
+                        why_bogus: None,
+                        response_code: no_records.response_code,
+                        expires: Instant::now()
+                            + Duration::from_secs(
+                                no_records.negative_ttl.unwrap_or(DEFAULT_NEGATIVE_TTL_SECS) as u64,
+                            ),
+                    })
+                }
+                None => Err(DnsError::from_resolve(&name, err)),
+            },
+        }
+    }
+}
+
+impl From<TokioResolver> for HickoryResolver {
+    fn from(inner: TokioResolver) -> Self {
+        Self { inner }
+    }
+}
+
+/// AggregateResolver aggregates the results from multiple
+/// resolver instances.
+/// This is most useful when you want to overlay or otherwise
+/// force in test data to take precedence over real resolver
+/// results.  In that situation, you'd push a TestResolver
+/// ahead of the HickoryResolver that you want to use for
+/// real DNS resolution.
+pub struct AggregateResolver {
+    resolvers: Vec<Box<dyn Resolver>>,
+}
+
+impl AggregateResolver {
+    pub fn new() -> Self {
+        Self { resolvers: vec![] }
+    }
+
+    pub fn push_resolver(&mut self, resolver: Box<dyn Resolver>) {
+        self.resolvers.push(resolver);
+    }
+}
+
+#[async_trait]
+impl Resolver for AggregateResolver {
+    async fn resolve_ip(&self, full: &str) -> Result<Vec<IpAddr>, DnsError> {
+        let mut errors = vec![];
+        for resolver in &self.resolvers {
+            match resolver.resolve_ip(full).await {
+                Ok(ips) if ips.is_empty() => {}
+                Ok(ips) => {
+                    return Ok(ips);
+                }
+                Err(err) => errors.push(err),
+            }
+        }
+
+        if let Some(err) = errors.pop() {
+            Err(err)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    async fn resolve_mx(&self, full: &str) -> Result<Vec<Name>, DnsError> {
+        let mut errors = vec![];
+        for resolver in &self.resolvers {
+            match resolver.resolve_mx(full).await {
+                Ok(ips) if ips.is_empty() => {}
+                Ok(ips) => {
+                    return Ok(ips);
+                }
+                Err(err) => errors.push(err),
+            }
+        }
+
+        if let Some(err) = errors.pop() {
+            Err(err)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    async fn resolve_ptr(&self, ip: IpAddr) -> Result<Vec<Name>, DnsError> {
+        let mut errors = vec![];
+        for resolver in &self.resolvers {
+            match resolver.resolve_ptr(ip).await {
+                Ok(ips) if ips.is_empty() => {}
+                Ok(ips) => {
+                    return Ok(ips);
+                }
+                Err(err) => errors.push(err),
+            }
+        }
+
+        if let Some(err) = errors.pop() {
+            Err(err)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    async fn resolve(&self, name: Name, rrtype: RecordType) -> Result<Answer, DnsError> {
+        let mut errors = vec![];
+        let mut nxdomain = None;
+        for resolver in &self.resolvers {
+            match resolver.resolve(name.clone(), rrtype).await {
+                Ok(answer) => {
+                    if !answer.nxdomain {
+                        return Ok(answer);
+                    }
+                    nxdomain.replace(answer);
+                }
+                Err(err) => errors.push(err),
+            }
+        }
+
+        if let Some(err) = errors.pop() {
+            Err(err)
+        } else {
+            match nxdomain.take() {
+                Some(answer) => Ok(answer),
+                None => Ok(Answer {
+                    canon_name: None,
+                    records: vec![],
+                    nxdomain: true,
+                    secure: false,
+                    bogus: false,
+                    why_bogus: None,
+                    expires: Instant::now() + Duration::from_secs(60),
+                    response_code: ResponseCode::NXDomain,
+                }),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ptr_host;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::str::FromStr;
+
+    #[test]
+    fn test_ptr_host() {
+        assert_eq!(
+            ptr_host(Ipv4Addr::new(192, 0, 2, 1).into()),
+            "1.2.0.192.in-addr.arpa"
+        );
+        assert_eq!(
+            ptr_host(Ipv6Addr::from_str("2001:db8::1").unwrap().into()),
+            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+        );
+    }
+}

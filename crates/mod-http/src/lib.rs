@@ -1,0 +1,644 @@
+use config::{any_err, from_lua_value, get_or_create_sub_module, SerdeWrappedValue};
+use futures_util::StreamExt;
+use mlua::prelude::LuaUserData;
+use mlua::{Lua, LuaSerdeExt, MetaMethod, UserDataMethods, Value};
+use reqwest::header::HeaderMap;
+use reqwest::{Body, Client, RequestBuilder, Response, StatusCode, Url};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::Mutex as TokioMutex;
+use tokio::time::Instant;
+use tokio_tungstenite::tungstenite::Message;
+
+// Client ----
+
+#[derive(Deserialize, Debug, Clone)]
+struct ClientOptions {
+    #[serde(default)]
+    user_agent: Option<String>,
+    #[serde(default)]
+    connection_verbose: Option<bool>,
+    #[serde(default, with = "duration_serde")]
+    pool_idle_timeout: Option<Duration>,
+    #[serde(default, with = "duration_serde")]
+    timeout: Option<Duration>,
+    #[serde(default)]
+    accept_invalid_certs: Option<bool>,
+}
+
+#[derive(Clone)]
+struct ClientWrapper {
+    client: Arc<Mutex<Option<Arc<Client>>>>,
+}
+
+impl ClientWrapper {
+    fn get_client(&self) -> mlua::Result<Arc<Client>> {
+        let inner = self.client.lock().unwrap();
+        inner
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| mlua::Error::external("client was closed"))
+    }
+}
+
+impl LuaUserData for ClientWrapper {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("get", |_, this, url: String| {
+            let builder = this.get_client()?.get(url);
+            Ok(RequestWrapper::new(builder))
+        });
+        methods.add_method("post", |_, this, url: String| {
+            let builder = this.get_client()?.post(url);
+            Ok(RequestWrapper::new(builder))
+        });
+        methods.add_method("put", |_, this, url: String| {
+            let builder = this.get_client()?.put(url);
+            Ok(RequestWrapper::new(builder))
+        });
+        methods.add_method("close", |_, this, _: ()| {
+            this.client.lock().unwrap().take();
+            Ok(())
+        });
+    }
+}
+
+// Request ----
+
+#[derive(Clone)]
+struct RequestWrapper {
+    builder: Arc<Mutex<Option<RequestBuilder>>>,
+}
+
+impl RequestWrapper {
+    fn new(builder: RequestBuilder) -> Self {
+        Self {
+            builder: Arc::new(Mutex::new(Some(builder))),
+        }
+    }
+
+    fn apply<F>(&self, func: F) -> mlua::Result<()>
+    where
+        F: FnOnce(RequestBuilder) -> anyhow::Result<RequestBuilder>,
+    {
+        let b = self
+            .builder
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| mlua::Error::external("broken request builder"))?;
+
+        let b = (func)(b).map_err(any_err)?;
+
+        self.builder.lock().unwrap().replace(b);
+        Ok(())
+    }
+
+    async fn send(&self) -> mlua::Result<Response> {
+        let b = self
+            .builder
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| mlua::Error::external("broken request builder"))?;
+
+        b.send().await.map_err(any_err)
+    }
+}
+
+#[derive(Deserialize, Clone, Hash, PartialEq, Eq, Debug)]
+pub struct FilePart {
+    data: String,
+    file_name: String,
+}
+
+impl LuaUserData for RequestWrapper {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("header", |_, this, (key, value): (String, String)| {
+            this.apply(|b| Ok(b.header(key, value)))?;
+            Ok(this.clone())
+        });
+
+        methods.add_method("headers", |_, this, headers: HashMap<String, String>| {
+            for (key, value) in headers {
+                this.apply(|b| Ok(b.header(key, value)))?;
+            }
+            Ok(this.clone())
+        });
+
+        methods.add_method("timeout", |_, this, duration: Value| {
+            let duration = match duration {
+                Value::Number(n) => std::time::Duration::from_secs_f64(n),
+                Value::String(s) => {
+                    let s = s.to_str()?;
+                    humantime::parse_duration(&s).map_err(any_err)?
+                }
+                _ => {
+                    return Err(mlua::Error::external("invalid timeout duration"));
+                }
+            };
+            this.apply(|b| Ok(b.timeout(duration)))?;
+            Ok(this.clone())
+        });
+
+        methods.add_method(
+            "basic_auth",
+            |_, this, (username, password): (String, Option<String>)| {
+                this.apply(|b| Ok(b.basic_auth(username, password)))?;
+                Ok(this.clone())
+            },
+        );
+
+        methods.add_method("bearer_auth", |_, this, token: String| {
+            this.apply(|b| Ok(b.bearer_auth(token)))?;
+            Ok(this.clone())
+        });
+
+        methods.add_method("body", |_, this, body: String| {
+            this.apply(|b| Ok(b.body(body)))?;
+            Ok(this.clone())
+        });
+
+        methods.add_method(
+            "form_url_encoded",
+            |_, this, params: HashMap<String, String>| {
+                this.apply(|b| Ok(b.form(&params)))?;
+                Ok(this.clone())
+            },
+        );
+
+        methods.add_method(
+            "form_multipart_data",
+            |lua, this, params: HashMap<String, mlua::Value>| {
+                // Generate a MIME body from the provided parameters
+                use mail_builder::headers::text::Text;
+                use mail_builder::headers::HeaderType;
+                use mail_builder::mime::MimePart;
+                use mailparse::MailHeaderMap;
+                use std::borrow::Cow;
+
+                let mut data = MimePart::new_multipart("multipart/form-data", vec![]);
+
+                for (k, v) in params {
+                    match v {
+                        mlua::Value::String(s) => {
+                            let part = if let Ok(s) = s.to_str() {
+                                MimePart::new_text(Cow::Owned(s.to_string()))
+                            } else {
+                                MimePart::new_binary(
+                                    "application/octet-stream",
+                                    Cow::Owned(s.as_bytes().to_vec()),
+                                )
+                            };
+                            data.add_part(part.header(
+                                "Content-Disposition",
+                                HeaderType::Text(Text::new(format!("form-data; name=\"{k}\""))),
+                            ));
+                        }
+                        _ => {
+                            let file: FilePart = lua.from_value(v.clone())?;
+
+                            let part = MimePart::new_binary(
+                                "application/octet-stream",
+                                file.data.into_bytes(),
+                            );
+                            data.add_part(part.header(
+                                "Content-Disposition",
+                                HeaderType::Text(Text::new(format!(
+                                    "form-data; name=\"{k}\"; filename=\"{}\"",
+                                    file.file_name
+                                ))),
+                            ));
+                        }
+                    }
+                }
+                let builder = mail_builder::MessageBuilder::new();
+                let builder = builder.body(data);
+                let body = builder.write_to_vec().map_err(any_err)?;
+
+                // Now, parse out the Content-Type header so that we can set that in
+                // the request, and get the generated body with its generated boundary
+                // string into a separate variable so that we can assign it as the body
+                // of the HTTP request.
+
+                let (headers, body_offset) = mailparse::parse_headers(&body).map_err(any_err)?;
+
+                let content_type = headers
+                    .get_first_value("Content-Type")
+                    .ok_or_else(|| mlua::Error::external("missing Content-Type!?".to_string()))?;
+
+                let body = &body[body_offset..];
+
+                this.apply(|b| Ok(b.header("Content-Type", content_type).body(body.to_vec())))?;
+
+                Ok(this.clone())
+            },
+        );
+
+        methods.add_async_method("send", |_, this, _: ()| async move {
+            let response = this.send().await?;
+            let status = response.status();
+            Ok(ResponseWrapper {
+                status,
+                response: Arc::new(Mutex::new(Some(response))),
+            })
+        });
+
+        // Convenience helper to apply AWS SigV4 signing to this request
+        methods.add_async_method(
+            "aws_sign_v4",
+            |_lua, this, params: SerdeWrappedValue<mod_aws_sigv4::SigV4Request>| async move {
+                let mut signer_params = params.0;
+
+                // Clone the current RequestBuilder so we can inspect method, URI, and query params
+                let req_builder = this
+                    .builder
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok_or_else(|| mlua::Error::external("broken request builder"))?
+                    .try_clone()
+                    .ok_or_else(|| mlua::Error::external("failed to clone request builder"))?;
+
+                let req = req_builder.build().map_err(any_err)?;
+
+                // Populate method, uri and query parameters from the request
+                signer_params.method = req.method().as_str().to_string();
+                signer_params.uri = req.url().path().to_string();
+                signer_params.query_params = req
+                    .url()
+                    .query_pairs()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+
+                // Ensure the Host header is present
+                if !signer_params.headers.contains_key("host") {
+                    if let Some(host) = req.url().host_str() {
+                        signer_params
+                            .headers
+                            .insert("host".to_string(), host.to_string());
+                    }
+                }
+
+                let sig = mod_aws_sigv4::sign_request(signer_params)
+                    .await
+                    .map_err(any_err)?;
+
+                // Apply the computed signature headers to the underlying request builder
+                this.apply(|b| {
+                    Ok(b.header("Authorization", sig.authorization)
+                        .header("X-Amz-Date", sig.timestamp))
+                })?;
+
+                Ok(this.clone())
+            },
+        );
+    }
+}
+
+// Response ----
+
+#[derive(Clone)]
+struct ResponseWrapper {
+    status: StatusCode,
+    response: Arc<Mutex<Option<Response>>>,
+}
+
+impl ResponseWrapper {
+    fn with<F, T>(&self, func: F) -> mlua::Result<T>
+    where
+        F: FnOnce(&Response) -> anyhow::Result<T>,
+    {
+        let locked = self.response.lock().unwrap();
+        let response = locked
+            .as_ref()
+            .ok_or_else(|| mlua::Error::external("broken response wrapper"))?;
+
+        (func)(response).map_err(any_err)
+    }
+
+    async fn text(&self) -> mlua::Result<String> {
+        let r = self
+            .response
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| mlua::Error::external("broken response wrapper"))?;
+
+        r.text().await.map_err(any_err)
+    }
+
+    async fn bytes(&self, lua: &Lua) -> mlua::Result<mlua::String> {
+        let r = self
+            .response
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| mlua::Error::external("broken response wrapper"))?;
+
+        let bytes = r.bytes().await.map_err(any_err)?;
+
+        lua.create_string(bytes.as_ref())
+    }
+}
+
+impl LuaUserData for ResponseWrapper {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("status_code", |_, this, _: ()| Ok(this.status.as_u16()));
+        methods.add_method("status_reason", |_, this, _: ()| {
+            Ok(this.status.canonical_reason())
+        });
+        methods.add_method("status_is_informational", |_, this, _: ()| {
+            Ok(this.status.is_informational())
+        });
+        methods.add_method("status_is_success", |_, this, _: ()| {
+            Ok(this.status.is_success())
+        });
+        methods.add_method("status_is_redirection", |_, this, _: ()| {
+            Ok(this.status.is_redirection())
+        });
+        methods.add_method("status_is_client_error", |_, this, _: ()| {
+            Ok(this.status.is_client_error())
+        });
+        methods.add_method("status_is_server_error", |_, this, _: ()| {
+            Ok(this.status.is_server_error())
+        });
+        methods.add_method("headers", |_, this, _: ()| {
+            this.with(|response| Ok(HeaderMapWrapper(response.headers().clone())))
+        });
+        methods.add_method("content_length", |_, this, _: ()| {
+            this.with(|response| Ok(response.content_length()))
+        });
+
+        methods.add_async_method("text", |_, this, _: ()| async move { this.text().await });
+
+        methods.add_async_method(
+            "bytes",
+            |lua, this, _: ()| async move { this.bytes(&lua).await },
+        );
+    }
+}
+
+// Headermap ---
+
+#[derive(Clone, mlua::FromLua)]
+struct HeaderMapWrapper(HeaderMap);
+
+impl LuaUserData for HeaderMapWrapper {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| {
+            if let Some(value) = this.0.get(&key) {
+                let s = lua.create_string(value.as_bytes())?;
+                return Ok(Value::String(s));
+            }
+            Ok(Value::Nil)
+        });
+
+        methods.add_meta_method(MetaMethod::Pairs, |lua, this, ()| {
+            // Snapshot every header line up front and iterate by position. The
+            // header map is a multimap, and a name-keyed iterator can never
+            // advance past a repeated name: given the previous key it re-finds
+            // its first occurrence and yields the one after it forever. Values
+            // are kept as raw bytes to avoid a lossy conversion.
+            let entries: Vec<(String, Vec<u8>)> = this
+                .0
+                .iter()
+                .map(|(name, value)| (name.as_str().to_string(), value.as_bytes().to_vec()))
+                .collect();
+
+            let mut index = 0;
+            let iter =
+                lua.create_function_mut(move |lua, (_state, _control): (Value, Value)| {
+                    let Some((name, value)) = entries.get(index) else {
+                        return Ok(mlua::MultiValue::new());
+                    };
+                    index += 1;
+                    let name = lua.create_string(name)?;
+                    let value = lua.create_string(value)?;
+                    Ok(mlua::MultiValue::from_vec(vec![
+                        Value::String(name),
+                        Value::String(value),
+                    ]))
+                })?;
+            Ok((iter, Value::Nil, Value::Nil))
+        });
+    }
+}
+
+#[derive(Clone)]
+struct WebSocketStream {
+    stream: Arc<
+        TokioMutex<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    >,
+}
+
+impl LuaUserData for WebSocketStream {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_async_method("recv", |lua, this, ()| async move {
+            let maybe_msg = {
+                let mut stream = this.stream.lock().await;
+                stream.next().await
+            };
+            let msg = match maybe_msg {
+                Some(msg) => msg.map_err(any_err)?,
+                None => return Ok(None),
+            };
+            Ok(match msg {
+                Message::Text(s) => Some(lua.create_string(&s)?),
+                Message::Close(_close_frame) => {
+                    return Ok(None);
+                }
+                Message::Pong(s) | Message::Binary(s) => Some(lua.create_string(&s)?),
+                Message::Ping(_) | Message::Frame(_) => {
+                    unreachable!()
+                }
+            })
+        });
+
+        methods.add_async_method("recv_batch", |lua, this, duration| async move {
+            let duration = match duration {
+                Value::Number(n) => std::time::Duration::from_secs_f64(n),
+                Value::String(s) => {
+                    let s = s.to_str()?;
+                    humantime::parse_duration(&s).map_err(any_err)?
+                }
+                _ => {
+                    return Err(mlua::Error::external("invalid timeout duration"));
+                }
+            };
+            let deadline = Instant::now() + duration;
+            let mut messages = vec![];
+            while let Ok(maybe_msg) = tokio::time::timeout_at(deadline, async {
+                let mut stream = this.stream.lock().await;
+                stream.next().await
+            })
+            .await
+            {
+                let msg = match maybe_msg {
+                    Some(msg) => msg.map_err(any_err)?,
+                    None => {
+                        if messages.is_empty() {
+                            return Err(mlua::Error::external("websocket closed"));
+                        }
+                        break;
+                    }
+                };
+                match msg {
+                    Message::Text(s) => messages.push(lua.create_string(&s)?),
+                    Message::Close(_close_frame) => {
+                        if messages.is_empty() {
+                            return Err(mlua::Error::external("websocket closed"));
+                        }
+                        break;
+                    }
+                    Message::Pong(s) | Message::Binary(s) => messages.push(lua.create_string(&s)?),
+                    Message::Ping(_) | Message::Frame(_) => {
+                        unreachable!()
+                    }
+                }
+            }
+
+            Ok(messages)
+        });
+    }
+}
+
+pub fn register(lua: &Lua) -> anyhow::Result<()> {
+    let http_mod = get_or_create_sub_module(lua, "http")?;
+
+    http_mod.set(
+        "build_url",
+        lua.create_function(|_lua, (url, params): (String, HashMap<String, String>)| {
+            let url = Url::parse_with_params(&url, params.into_iter()).map_err(any_err)?;
+            let url: String = url.into();
+            Ok(url)
+        })?,
+    )?;
+
+    http_mod.set(
+        "build_client",
+        lua.create_function(|lua, options: Value| {
+            let options: ClientOptions = from_lua_value(lua, options)?;
+            let mut builder = kumo_http_client::builder().timeout(
+                options
+                    .timeout
+                    .unwrap_or_else(|| std::time::Duration::from_secs(60)),
+            );
+
+            if let Some(verbose) = options.connection_verbose {
+                builder = builder.connection_verbose(verbose);
+            }
+
+            if let Some(idle) = options.pool_idle_timeout {
+                builder = builder.pool_idle_timeout(idle);
+            }
+
+            if let Some(user_agent) = options.user_agent {
+                builder = builder.user_agent(user_agent);
+            }
+
+            if let Some(accept_invalid_certs) = options.accept_invalid_certs {
+                builder = builder.danger_accept_invalid_certs(accept_invalid_certs)
+            }
+
+            let client = builder.build().map_err(any_err)?;
+            Ok(ClientWrapper {
+                client: Arc::new(Mutex::new(Some(Arc::new(client)))),
+            })
+        })?,
+    )?;
+
+    http_mod.set(
+        "connect_websocket",
+        lua.create_async_function(|_, url: String| async move {
+            let (stream, response) = tokio_tungstenite::connect_async(url)
+                .await
+                .map_err(any_err)?;
+            let stream = WebSocketStream {
+                stream: Arc::new(TokioMutex::new(stream)),
+            };
+
+            // Adapt the retured http::response into a reqwest::Response
+            // so that we can use our existing ResponseWrapper type with it
+            let status = response.status();
+            let (parts, body) = response.into_parts();
+            let body = Body::from(body.unwrap_or_else(std::vec::Vec::new));
+            let response = tokio_tungstenite::tungstenite::http::Response::from_parts(parts, body);
+
+            let response = ResponseWrapper {
+                status,
+                response: Arc::new(Mutex::new(Some(Response::from(response)))),
+            };
+
+            Ok((stream, response))
+        })?,
+    )?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with_duplicate_set_cookie() -> HeaderMapWrapper {
+        let mut headers = HeaderMap::new();
+        headers.append("content-type", "text/html".parse().unwrap());
+        headers.append("set-cookie", "a=1".parse().unwrap());
+        headers.append("set-cookie", "b=2".parse().unwrap());
+        headers.append("set-cookie", "c=3".parse().unwrap());
+        HeaderMapWrapper(headers)
+    }
+
+    // Iterating a response's headers with `pairs` must visit every header line
+    // exactly once. It must stop even when a header name repeats (three
+    // Set-Cookie lines here, as github.com sends). The loop is capped to make a
+    // non-terminating iterator fail the count assertion rather than hang the
+    // test process.
+    #[test]
+    fn pairs_terminates_over_repeated_header_name() {
+        let lua = Lua::new();
+        lua.globals()
+            .set("headers", headers_with_duplicate_set_cookie())
+            .unwrap();
+
+        let (count, cookies): (usize, String) = lua
+            .load(
+                r#"
+                local n = 0
+                local cookies = {}
+                for k, v in pairs(headers) do
+                    n = n + 1
+                    if n > 1000 then break end
+                    if k == 'set-cookie' then
+                        cookies[#cookies + 1] = v
+                    end
+                end
+                return n, table.concat(cookies, ',')
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        k9::assert_equal!(count, 4);
+        k9::assert_equal!(cookies, "a=1,b=2,c=3");
+    }
+
+    // Direct indexing returns the first value for a repeated header name and is
+    // the safe accessor to use in policy.
+    #[test]
+    fn index_returns_first_value_for_repeated_header_name() {
+        let lua = Lua::new();
+        lua.globals()
+            .set("headers", headers_with_duplicate_set_cookie())
+            .unwrap();
+
+        let cookie: String = lua.load(r#"return headers['set-cookie']"#).eval().unwrap();
+        k9::assert_equal!(cookie, "a=1");
+    }
+}

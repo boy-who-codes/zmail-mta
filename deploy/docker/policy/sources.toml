@@ -1,0 +1,7 @@
+[source."default"]
+source_address = "0.0.0.0"
+
+[pool."default"]
+[pool."default"."default"]
+weight = 1
+

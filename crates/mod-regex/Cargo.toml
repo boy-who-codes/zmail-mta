@@ -1,0 +1,14 @@
+[package]
+name = "mod-regex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+config = {path="../config"}
+fancy-regex = {workspace=true}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"]}
+regex = {workspace=true}
+
+[lints]
+workspace = true

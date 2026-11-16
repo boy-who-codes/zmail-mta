@@ -1,0 +1,1204 @@
+use crate::spec::MacroSpec;
+use crate::{fully_qualify, SpfContext, SpfDisposition, SpfResult};
+use dns_resolver::Resolver;
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+#[derive(Debug, Default)]
+pub(crate) struct Record {
+    directives: Vec<Directive>,
+    redirect: Option<MacroSpec>,
+    explanation: Option<MacroSpec>,
+}
+
+impl Record {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+        let mut tokens = s.split_whitespace();
+        let version = tokens
+            .next()
+            .ok_or_else(|| format!("expected version in {s}"))?;
+        if version != "v=spf1" {
+            return Err(format!("expected SPF version 1 in {s}"));
+        }
+
+        let mut new = Self::default();
+        for t in tokens {
+            if t.is_empty() {
+                return Err("invalid empty token".to_string());
+            }
+
+            if let Ok(directive) = Directive::parse(t) {
+                if new.redirect.is_some() || new.explanation.is_some() {
+                    return Err("directive after modifier".to_owned());
+                }
+
+                new.directives.push(directive);
+                continue;
+            }
+
+            if let Ok(modifier) = Modifier::parse(t) {
+                match modifier {
+                    Modifier::Redirect(domain) => match new.redirect {
+                        Some(_) => return Err("duplicate redirect modifier".to_owned()),
+                        None => new.redirect = Some(domain),
+                    },
+                    Modifier::Explanation(domain) => match new.explanation {
+                        Some(_) => return Err("duplicate explanation modifier".to_owned()),
+                        None => new.explanation = Some(domain),
+                    },
+                    _ => {} // "Unrecognized modifiers MUST be ignored"
+                }
+                continue;
+            }
+
+            return Err(format!("invalid token '{t}'"));
+        }
+
+        Ok(new)
+    }
+
+    pub(crate) async fn evaluate(&self, cx: &SpfContext<'_>, resolver: &dyn Resolver) -> SpfResult {
+        let mut failed = None;
+        for directive in &self.directives {
+            match directive.evaluate(cx, resolver).await {
+                Ok(Some(SpfResult {
+                    disposition: SpfDisposition::Fail,
+                    context,
+                })) => {
+                    failed = Some(context);
+                    break;
+                }
+                Ok(Some(result)) => return result,
+                Ok(None) => continue,
+                Err(err) => return err,
+            }
+        }
+
+        if let Some(domain) = &self.redirect {
+            let domain = match cx.domain(Some(domain), resolver).await {
+                Ok(domain) => domain,
+                Err(err) => return err,
+            };
+
+            let nested = cx.with_domain(&domain);
+            match Box::pin(nested.check(resolver, false)).await {
+                SpfResult {
+                    disposition: SpfDisposition::Fail,
+                    context,
+                } => failed = Some(context),
+                result => return result,
+            }
+        }
+
+        let failed = match failed {
+            Some(failed) => failed,
+            None => {
+                return SpfResult {
+                    disposition: SpfDisposition::Neutral,
+                    context: "default result".to_owned(),
+                }
+            }
+        };
+
+        let domain = match &self.explanation {
+            Some(domain) => match cx.domain(Some(domain), resolver).await {
+                Ok(domain) => domain,
+                Err(err) => return err,
+            },
+            None => return SpfResult::fail(failed),
+        };
+
+        // "If there are any DNS processing errors (any RCODE other than 0), or
+        // if no records are returned, or if more than one record is returned,
+        // or if there are syntax errors in the explanation string, then proceed
+        // as if no "exp" modifier was given."
+        let explanation = match resolver.resolve_txt(&fully_qualify(&domain)).await {
+            Ok(answers) if answers.records.len() == 1 => answers.as_txt().pop().unwrap(),
+            Ok(_) | Err(_) => return SpfResult::fail(failed),
+        };
+
+        let spec = match MacroSpec::parse(&explanation) {
+            Ok(spec) => spec,
+            Err(_) => return SpfResult::fail(failed),
+        };
+
+        match spec.expand(cx, resolver).await {
+            Ok(explanation) => SpfResult::fail(explanation),
+            Err(_) => SpfResult::fail(failed),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Directive {
+    pub qualifier: Qualifier,
+    pub mechanism: Mechanism,
+}
+
+impl Directive {
+    fn parse(s: &str) -> Result<Self, String> {
+        let mut qualifier = Qualifier::default();
+        let s = match s.get(0..1).and_then(Qualifier::parse) {
+            Some(q) => {
+                qualifier = q;
+                &s[1..]
+            }
+            None => s,
+        };
+
+        Ok(Self {
+            qualifier,
+            mechanism: Mechanism::parse(s)?,
+        })
+    }
+
+    async fn evaluate(
+        &self,
+        cx: &SpfContext<'_>,
+        resolver: &dyn Resolver,
+    ) -> Result<Option<SpfResult>, SpfResult> {
+        let matched = match &self.mechanism {
+            Mechanism::All => true,
+            Mechanism::A { domain, cidr_len } => {
+                cx.check_lookup_limit()?;
+                let domain = cx.domain(domain.as_ref(), resolver).await?;
+                let resolved = match resolver.resolve_ip(&fully_qualify(&domain)).await {
+                    Ok(ips) => ips,
+                    Err(err) => {
+                        return Err(SpfResult {
+                            disposition: SpfDisposition::TempError,
+                            context: format!("error looking up IP for {domain}: {err}"),
+                        })
+                    }
+                };
+
+                resolved
+                    .iter()
+                    .any(|&resolved_ip| cidr_len.matches(cx.client_ip, resolved_ip))
+            }
+            Mechanism::Mx { domain, cidr_len } => {
+                cx.check_lookup_limit()?;
+                let domain = cx.domain(domain.as_ref(), resolver).await?;
+                let exchanges = match resolver.resolve_mx(&fully_qualify(&domain)).await {
+                    Ok(exchanges) => exchanges,
+                    Err(err) => {
+                        return Err(SpfResult {
+                            disposition: SpfDisposition::TempError,
+                            context: format!("error looking up IP for {domain}: {err}"),
+                        })
+                    }
+                };
+
+                let mut matched = false;
+                for (idx, exchange) in exchanges.into_iter().enumerate() {
+                    if idx >= 10 {
+                        // https://datatracker.ietf.org/doc/html/rfc7208#section-4.6.4
+                        return Err(SpfResult {
+                            disposition: SpfDisposition::PermError,
+                            context: format!("too many MX records for {domain}"),
+                        });
+                    }
+
+                    let resolved = match resolver
+                        .resolve_ip(&fully_qualify(&exchange.to_string()))
+                        .await
+                    {
+                        Ok(ips) => ips,
+                        Err(err) => {
+                            return Err(SpfResult {
+                                disposition: SpfDisposition::TempError,
+                                context: format!("error looking up IP for {exchange}: {err}"),
+                            })
+                        }
+                    };
+
+                    if resolved
+                        .iter()
+                        .any(|&resolved_ip| cidr_len.matches(cx.client_ip, resolved_ip))
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                matched
+            }
+            Mechanism::Ip4 {
+                ip4_network,
+                cidr_len,
+            } => DualCidrLength {
+                v4: *cidr_len,
+                ..Default::default()
+            }
+            .matches(cx.client_ip, IpAddr::V4(*ip4_network)),
+            Mechanism::Ip6 {
+                ip6_network,
+                cidr_len,
+            } => DualCidrLength {
+                v6: *cidr_len,
+                ..Default::default()
+            }
+            .matches(cx.client_ip, IpAddr::V6(*ip6_network)),
+            Mechanism::Ptr { domain } => {
+                // Note that validated_domain applies lookup limits
+                let validated_domain = cx.validated_domain(domain.as_ref(), resolver).await?;
+
+                validated_domain.is_some()
+            }
+            Mechanism::Include { domain } => {
+                let domain = cx.domain(Some(domain), resolver).await?;
+                let nested = cx.with_domain(&domain);
+                use SpfDisposition::*;
+                match Box::pin(nested.check(resolver, false)).await {
+                    SpfResult {
+                        disposition: Pass, ..
+                    } => true,
+                    SpfResult {
+                        disposition: Fail | SoftFail | Neutral,
+                        ..
+                    } => false,
+                    SpfResult {
+                        disposition: TempError,
+                        context,
+                    } => {
+                        return Err(SpfResult {
+                            disposition: TempError,
+                            context: format!(
+                                "temperror while evaluating include:{domain}: {context}"
+                            ),
+                        })
+                    }
+                    SpfResult {
+                        disposition: disp @ PermError | disp @ None,
+                        context,
+                    } => {
+                        return Err(SpfResult {
+                            disposition: PermError,
+                            context: format!("{disp} while evaluating include:{domain}: {context}"),
+                        })
+                    }
+                }
+            }
+            Mechanism::Exists { domain } => {
+                cx.check_lookup_limit()?;
+                let domain = cx.domain(Some(domain), resolver).await?;
+                match resolver.resolve_ip(&fully_qualify(&domain)).await {
+                    Ok(ips) => ips.iter().any(|ip| ip.is_ipv4()),
+                    Err(err) => {
+                        return Err(SpfResult {
+                            disposition: SpfDisposition::TempError,
+                            context: format!("error looking up IP for {domain}: {err}"),
+                        })
+                    }
+                }
+            }
+        };
+
+        Ok(if matched {
+            Some(SpfResult {
+                disposition: SpfDisposition::from(self.qualifier),
+                context: format!("matched '{self}' directive"),
+            })
+        } else {
+            None
+        })
+    }
+}
+
+impl fmt::Display for Directive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.qualifier != Qualifier::Pass {
+            write!(f, "{}", self.qualifier.as_str())?;
+        }
+        write!(f, "{}", self.mechanism)
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Qualifier {
+    /// `+`
+    #[default]
+    Pass,
+    /// `-`
+    Fail,
+    /// `~`
+    SoftFail,
+    /// `?`
+    Neutral,
+}
+
+impl Qualifier {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "+" => Self::Pass,
+            "-" => Self::Fail,
+            "~" => Self::SoftFail,
+            "?" => Self::Neutral,
+            _ => return None,
+        })
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pass => "+",
+            Self::Fail => "-",
+            Self::SoftFail => "~",
+            Self::Neutral => "?",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DualCidrLength {
+    pub v4: u8,
+    pub v6: u8,
+}
+
+impl DualCidrLength {
+    /// Whether the `observed` IP address (from the client's IP) matches the `specified` address
+    /// (from/via the SPF record), given the specified CIDR mask lengths.
+    fn matches(&self, observed: IpAddr, specified: IpAddr) -> bool {
+        match (observed, specified, self) {
+            (IpAddr::V4(observed), IpAddr::V4(specified), DualCidrLength { v4, .. }) => {
+                let mask = ipv4_prefix_mask(*v4);
+                let specified_masked = Ipv4Addr::from_bits(specified.to_bits() & mask);
+                let observed_masked = Ipv4Addr::from(observed.to_bits() & mask);
+                specified_masked == observed_masked
+            }
+            (IpAddr::V6(observed), IpAddr::V6(specified), DualCidrLength { v6, .. }) => {
+                let mask = ipv6_prefix_mask(*v6);
+                let specified_masked = Ipv6Addr::from_bits(specified.to_bits() & mask);
+                let observed_masked = Ipv6Addr::from(observed.to_bits() & mask);
+                specified_masked == observed_masked
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Build the network mask for an IPv4 prefix length. A `/0` prefix yields the
+/// all-zero mask, matching every address.
+fn ipv4_prefix_mask(prefix: u8) -> u32 {
+    u32::MAX
+        .checked_shl((32 - prefix.min(32)) as u32)
+        .unwrap_or(0)
+}
+
+/// Build the network mask for an IPv6 prefix length. See [`ipv4_prefix_mask`].
+fn ipv6_prefix_mask(prefix: u8) -> u128 {
+    u128::MAX
+        .checked_shl((128 - prefix.min(128)) as u32)
+        .unwrap_or(0)
+}
+
+impl Default for DualCidrLength {
+    fn default() -> Self {
+        Self { v4: 32, v6: 128 }
+    }
+}
+
+/// Parse a CIDR prefix length, rejecting values that exceed `max` bits for the
+/// address family (32 for IPv4, 128 for IPv6). RFC 7208 treats an out-of-range
+/// length as a syntax error.
+fn parse_cidr_length(s: &str, max: u8) -> Result<u8, String> {
+    let len: u8 = s.parse().map_err(|err| format!("{err}"))?;
+    if len > max {
+        return Err(format!("CIDR length /{len} exceeds maximum of /{max}"));
+    }
+    Ok(len)
+}
+
+impl DualCidrLength {
+    fn parse_from_end(s: &str) -> Result<(&str, Self), String> {
+        match s.rsplit_once('/') {
+            Some((left, right)) => {
+                if left.ends_with('/') {
+                    // we have another cidr length
+                    if let Some((prefix, v4cidr)) = left[0..left.len() - 1].rsplit_once('/') {
+                        let v4 = parse_cidr_length(v4cidr, 32).map_err(|err| {
+                            format!(
+                                "invalid dual-cidr-length in {s}: parsing v4 cidr portion: {err}"
+                            )
+                        })?;
+                        let v6 = parse_cidr_length(right, 128)
+                            .map_err(|err| format!("invalid dual-cidr-length in {s}: {err}"))?;
+                        return Ok((prefix, Self { v4, v6 }));
+                    }
+                }
+                let v4 = parse_cidr_length(right, 32)
+                    .map_err(|err| format!("invalid dual-cidr-length in {s}: {err}"))?;
+                Ok((
+                    left,
+                    Self {
+                        v4,
+                        ..Self::default()
+                    },
+                ))
+            }
+            None => Ok((s, Self::default())),
+        }
+    }
+}
+
+impl fmt::Display for DualCidrLength {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.v4 == 32 && self.v6 == 128 {
+            return Ok(());
+        }
+
+        write!(f, "/{}", self.v4)?;
+        if self.v6 != 128 {
+            write!(f, "/{}", self.v6)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum Mechanism {
+    All,
+    Include {
+        domain: MacroSpec,
+    },
+    A {
+        domain: Option<MacroSpec>,
+        cidr_len: DualCidrLength,
+    },
+    Mx {
+        domain: Option<MacroSpec>,
+        cidr_len: DualCidrLength,
+    },
+    Ptr {
+        domain: Option<MacroSpec>,
+    },
+    Ip4 {
+        ip4_network: Ipv4Addr,
+        cidr_len: u8,
+    },
+    Ip6 {
+        ip6_network: Ipv6Addr,
+        cidr_len: u8,
+    },
+    Exists {
+        domain: MacroSpec,
+    },
+}
+
+impl fmt::Display for Mechanism {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "all"),
+            Self::Include { domain } => write!(f, "include:{}", domain),
+            Self::A { domain, cidr_len } => {
+                write!(f, "a")?;
+                if let Some(domain) = domain {
+                    write!(f, ":{}", domain)?;
+                }
+                write!(f, "{}", cidr_len)
+            }
+            Self::Mx { domain, cidr_len } => {
+                write!(f, "mx")?;
+                if let Some(domain) = domain {
+                    write!(f, ":{}", domain)?;
+                }
+                write!(f, "{}", cidr_len)
+            }
+            Self::Ptr { domain } => {
+                write!(f, "ptr")?;
+                if let Some(domain) = domain {
+                    write!(f, ":{}", domain)?;
+                }
+                Ok(())
+            }
+            Self::Ip4 {
+                ip4_network,
+                cidr_len,
+            } => write!(f, "ip4:{}/{}", ip4_network, cidr_len),
+            Self::Ip6 {
+                ip6_network,
+                cidr_len,
+            } => write!(f, "ip6:{}/{}", ip6_network, cidr_len),
+            Self::Exists { domain } => write!(f, "exists:{}", domain),
+        }
+    }
+}
+
+fn starts_with_ident<'a>(s: &'a str, ident: &str) -> Option<&'a str> {
+    if s.len() < ident.len() {
+        return None;
+    }
+
+    if s.get(0..ident.len())?.eq_ignore_ascii_case(ident) {
+        Some(&s[ident.len()..])
+    } else {
+        None
+    }
+}
+
+impl Mechanism {
+    fn parse(s: &str) -> Result<Self, String> {
+        if s.eq_ignore_ascii_case("all") {
+            return Ok(Self::All);
+        }
+
+        if let Some(spec) = starts_with_ident(s, "include:") {
+            return Ok(Self::Include {
+                domain: MacroSpec::parse(spec)?,
+            });
+        }
+
+        if let Some(remain) = starts_with_ident(s, "a") {
+            let (remain, cidr_len) = DualCidrLength::parse_from_end(remain)?;
+
+            let domain = if let Some(spec) = remain.strip_prefix(":") {
+                Some(MacroSpec::parse(spec)?)
+            } else if remain.is_empty() {
+                None
+            } else {
+                return Err(format!("invalid 'a' mechanism: {s}"));
+            };
+
+            return Ok(Self::A { domain, cidr_len });
+        }
+        if let Some(remain) = starts_with_ident(s, "mx") {
+            let (remain, cidr_len) = DualCidrLength::parse_from_end(remain)?;
+
+            let domain = if let Some(spec) = remain.strip_prefix(":") {
+                Some(MacroSpec::parse(spec)?)
+            } else if remain.is_empty() {
+                None
+            } else {
+                return Err(format!("invalid 'mx' mechanism: {s}"));
+            };
+
+            return Ok(Self::Mx { domain, cidr_len });
+        }
+        if let Some(remain) = starts_with_ident(s, "ptr") {
+            let domain = if let Some(spec) = remain.strip_prefix(":") {
+                Some(MacroSpec::parse(spec)?)
+            } else if remain.is_empty() {
+                None
+            } else {
+                return Err(format!("invalid 'ptr' mechanism: {s}"));
+            };
+
+            return Ok(Self::Ptr { domain });
+        }
+        if let Some(remain) = starts_with_ident(s, "ip4:") {
+            let (addr, len) = if let Some((addr, len)) = remain.split_once('/') {
+                (addr, len)
+            } else {
+                // Default CIDR length for IPv4 is /32 (single host)
+                (remain, "32")
+            };
+            let ip4_network = addr
+                .parse()
+                .map_err(|err| format!("invalid 'ip4' mechanism: {s}: {err}"))?;
+            let cidr_len = parse_cidr_length(len, 32)
+                .map_err(|err| format!("invalid 'ip4' mechanism: {s}: {err}"))?;
+
+            return Ok(Self::Ip4 {
+                ip4_network,
+                cidr_len,
+            });
+        }
+        if let Some(remain) = starts_with_ident(s, "ip6:") {
+            let (addr, len) = if let Some((addr, len)) = remain.split_once('/') {
+                (addr, len)
+            } else {
+                // Default CIDR length for IPv6 is /128 (single host)
+                (remain, "128")
+            };
+            let ip6_network = addr
+                .parse()
+                .map_err(|err| format!("invalid 'ip6' mechanism: {s}: {err}"))?;
+            let cidr_len = parse_cidr_length(len, 128)
+                .map_err(|err| format!("invalid 'ip6' mechanism: {s}: {err}"))?;
+
+            return Ok(Self::Ip6 {
+                ip6_network,
+                cidr_len,
+            });
+        }
+        if let Some(spec) = starts_with_ident(s, "exists:") {
+            return Ok(Self::Exists {
+                domain: MacroSpec::parse(spec)?,
+            });
+        }
+
+        Err(format!("invalid mechanism {s}"))
+    }
+}
+
+#[derive(Debug)]
+enum Modifier {
+    Redirect(MacroSpec),
+    Explanation(MacroSpec),
+    Unknown,
+}
+
+impl Modifier {
+    fn parse(s: &str) -> Result<Self, String> {
+        if let Some(spec) = starts_with_ident(s, "redirect=") {
+            return Ok(Self::Redirect(MacroSpec::parse(spec)?));
+        }
+        if let Some(spec) = starts_with_ident(s, "exp=") {
+            return Ok(Self::Explanation(MacroSpec::parse(spec)?));
+        }
+
+        let (name, _) = s
+            .split_once('=')
+            .ok_or_else(|| format!("invalid modifier {s}"))?;
+
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            && name.chars().next().unwrap().is_ascii_alphabetic();
+        if !valid {
+            return Err(format!("modifier name '{name}' is invalid"));
+        }
+
+        Ok(Self::Unknown)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn parse(s: &str) -> Record {
+        eprintln!("**\n{s}");
+        match Record::parse(s) {
+            Ok(r) => r,
+            Err(err) => panic!("{err}: {s}"),
+        }
+    }
+
+    #[test]
+    fn test_cidr_zero_matches_all() {
+        // A /0 prefix masks off every bit, so any address matches. The mask
+        // computation must not overflow the 32- or 128-bit shift.
+        let all_v4 = DualCidrLength { v4: 0, v6: 128 };
+        assert!(all_v4.matches("192.0.2.1".parse().unwrap(), "0.0.0.0".parse().unwrap()));
+        let all_v6 = DualCidrLength { v4: 32, v6: 0 };
+        assert!(all_v6.matches("2001:db8::1".parse().unwrap(), "::".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_cidr_boundary_accepted() {
+        // The maximum prefix for each family, and /0, must parse. A `>=`
+        // instead of `>` range check would reject valid records and silently
+        // change SPF results for real senders.
+        assert!(matches!(
+            Mechanism::parse("ip4:0.0.0.0/0").unwrap(),
+            Mechanism::Ip4 { cidr_len: 0, .. }
+        ));
+        assert!(matches!(
+            Mechanism::parse("ip4:192.0.2.1/32").unwrap(),
+            Mechanism::Ip4 { cidr_len: 32, .. }
+        ));
+        assert!(matches!(
+            Mechanism::parse("ip6:::/0").unwrap(),
+            Mechanism::Ip6 { cidr_len: 0, .. }
+        ));
+        assert!(matches!(
+            Mechanism::parse("ip6:2001:db8::/128").unwrap(),
+            Mechanism::Ip6 { cidr_len: 128, .. }
+        ));
+        assert!(matches!(
+            Mechanism::parse("a/0").unwrap(),
+            Mechanism::A {
+                cidr_len: DualCidrLength { v4: 0, .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            Mechanism::parse("mx/24//64").unwrap(),
+            Mechanism::Mx {
+                cidr_len: DualCidrLength { v4: 24, v6: 64 },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_cidr_out_of_range_rejected() {
+        k9::snapshot!(
+            Record::parse("v=spf1 ip4:0.0.0.0/33 -all").unwrap_err(),
+            "invalid token 'ip4:0.0.0.0/33'"
+        );
+        k9::snapshot!(
+            Record::parse("v=spf1 ip6:::/129 -all").unwrap_err(),
+            "invalid token 'ip6:::/129'"
+        );
+        k9::snapshot!(
+            Record::parse("v=spf1 a/33 -all").unwrap_err(),
+            "invalid token 'a/33'"
+        );
+        k9::snapshot!(
+            Record::parse("v=spf1 mx/0//129 -all").unwrap_err(),
+            "invalid token 'mx/0//129'"
+        );
+    }
+
+    #[test]
+    fn test_zero_width() {
+        k9::snapshot!(
+            Record::parse(
+                "v=spf1 mx a include:spf.host.example.com \u{200b}include:_spf.example.com ?all"
+            )
+            .unwrap_err(),
+            r#"invalid token '\u{200b}include:_spf.example.com'"#
+        );
+    }
+
+    #[test]
+    fn test_parse() {
+        k9::snapshot!(
+            Record::parse("v=spf1 -exists:%(ir).sbl.example.org").unwrap_err(),
+            r#"invalid token '-exists:%(ir).sbl.example.org'"#
+        );
+        k9::snapshot!(
+            Record::parse("v=spf1 -exists:%{ir.sbl.example.org").unwrap_err(),
+            r#"invalid token '-exists:%{ir.sbl.example.org'"#
+        );
+        k9::snapshot!(
+            Record::parse("v=spf1 -exists:%{ir").unwrap_err(),
+            r#"invalid token '-exists:%{ir'"#
+        );
+
+        // Extraneous space is not strictly allowed, but we're relaxed
+        // about it to support common real world usage
+        k9::snapshot!(
+            Record::parse("v=spf1 ").unwrap(),
+            "
+Record {
+    directives: [],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+
+        k9::snapshot!(
+            parse("v=spf1 mx  -all exp=explain._spf.%{d}"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: Some(
+        MacroSpec {
+            elements: [
+                Literal(
+                    "explain._spf.",
+                ),
+                Macro(
+                    MacroTerm {
+                        name: Domain,
+                        transformer_digits: None,
+                        url_escape: false,
+                        reverse: false,
+                        delimiters: "",
+                    },
+                ),
+            ],
+        },
+    ),
+}
+"#
+        );
+
+        k9::snapshot!(
+            parse("v=spf1 -exists:%{ir}.sbl.example.org"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Fail,
+            mechanism: Exists {
+                domain: MacroSpec {
+                    elements: [
+                        Macro(
+                            MacroTerm {
+                                name: Ip,
+                                transformer_digits: None,
+                                url_escape: false,
+                                reverse: true,
+                                delimiters: "",
+                            },
+                        ),
+                        Literal(
+                            ".sbl.example.org",
+                        ),
+                    ],
+                },
+            },
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+
+        k9::snapshot!(
+            parse("v=spf1 +all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 a -all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: A {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 a:example.org -all"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: A {
+                domain: Some(
+                    MacroSpec {
+                        elements: [
+                            Literal(
+                                "example.org",
+                            ),
+                        ],
+                    },
+                ),
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+        k9::snapshot!(
+            parse("v=spf1 mx -all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 mx:example.org -all"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: Some(
+                    MacroSpec {
+                        elements: [
+                            Literal(
+                                "example.org",
+                            ),
+                        ],
+                    },
+                ),
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+        k9::snapshot!(
+            parse("v=spf1 mx mx:example.org -all"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: Some(
+                    MacroSpec {
+                        elements: [
+                            Literal(
+                                "example.org",
+                            ),
+                        ],
+                    },
+                ),
+                cidr_len: DualCidrLength {
+                    v4: 32,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+        k9::snapshot!(
+            parse("v=spf1 mx/30 -all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 30,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 mx/30 mx:example.org/30 -all"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: None,
+                cidr_len: DualCidrLength {
+                    v4: 30,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Pass,
+            mechanism: Mx {
+                domain: Some(
+                    MacroSpec {
+                        elements: [
+                            Literal(
+                                "example.org",
+                            ),
+                        ],
+                    },
+                ),
+                cidr_len: DualCidrLength {
+                    v4: 30,
+                    v6: 128,
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+        k9::snapshot!(
+            parse("v=spf1 ptr -all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Ptr {
+                domain: None,
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 ip4:192.0.2.128/28 -all"),
+            "
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Ip4 {
+                ip4_network: 192.0.2.128,
+                cidr_len: 28,
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"
+        );
+        k9::snapshot!(
+            parse("v=spf1 include:example.com include:example.net -all"),
+            r#"
+Record {
+    directives: [
+        Directive {
+            qualifier: Pass,
+            mechanism: Include {
+                domain: MacroSpec {
+                    elements: [
+                        Literal(
+                            "example.com",
+                        ),
+                    ],
+                },
+            },
+        },
+        Directive {
+            qualifier: Pass,
+            mechanism: Include {
+                domain: MacroSpec {
+                    elements: [
+                        Literal(
+                            "example.net",
+                        ),
+                    ],
+                },
+            },
+        },
+        Directive {
+            qualifier: Fail,
+            mechanism: All,
+        },
+    ],
+    redirect: None,
+    explanation: None,
+}
+"#
+        );
+        k9::snapshot!(
+            parse("v=spf1 redirect=example.org"),
+            r#"
+Record {
+    directives: [],
+    redirect: Some(
+        MacroSpec {
+            elements: [
+                Literal(
+                    "example.org",
+                ),
+            ],
+        },
+    ),
+    explanation: None,
+}
+"#
+        );
+    }
+}

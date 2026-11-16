@@ -1,0 +1,56 @@
+name: Build Docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/docs.yml"
+      - "crates/toml2jsonc/**"
+      - "docs/**"
+      - "mkdocs-base.yml"
+      - "stylua.toml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/docs.yml"
+      - "crates/toml2jsonc/**"
+      - "docs/**"
+      - "mkdocs-base.yml"
+      - "stylua.toml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build_docs:
+    permissions:
+      contents: write
+    runs-on: kumo-linux-16core-amd64
+    container: docker://ghcr.io/kumocorp/builder-for-ubuntu:24.04
+    env:
+      HOME: /root
+    steps:
+    - uses: actions/checkout@v7.0.1
+    - name: Update PATH
+      run: echo /root/.cargo/bin >> $GITHUB_PATH
+    - name: Update env for rocksdb
+      run: |
+        echo ROCKSDB_LIB_DIR=/opt/kumomta/lib >> $GITHUB_ENV
+        echo ROCKSDB_STATIC=static >> $GITHUB_ENV
+        echo SNAPPY_LIB_DIR=/opt/kumomta/lib >> $GITHUB_ENV
+        echo SNAPPY_STATIC=static >> $GITHUB_ENV
+    - name: Fixup git permissions
+      run: git config --global --add safe.directory $PWD
+    - name: "Setup sccache"
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Run build
+      run: CI=false ./docs/build.sh
+    - name: Publish
+      if: ${{ github.event_name != 'pull_request' }}
+      env:
+        TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: ./assets/ci/push-gh-pages.sh

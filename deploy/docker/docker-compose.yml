@@ -1,0 +1,98 @@
+services:
+  # 1. KumoMTA Daemon (High-Speed Inbound & Outbound MTA)
+  kumomta:
+    container_name: mailops-kumomta
+    hostname: mta.mailops.local
+    image: ghcr.io/kumocorp/kumomta:latest
+    restart: unless-stopped
+    command: ["/opt/kumomta/sbin/kumod", "--policy", "/opt/kumomta/etc/policy/init.lua", "--user", "kumod"]
+    ports:
+      - "25:2525"    # Public SMTP Inbound (Port 25)
+      - "2525:2525"  # Alternate unprivileged SMTP
+      - "8000:8000"  # KumoMTA HTTP Management & Injection API
+    volumes:
+      - ./policy:/opt/kumomta/etc/policy:ro
+      - ./spool:/var/spool/kumomta
+      - ./logs:/var/log/kumomta
+    depends_on:
+      kumo-tsa:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - mailops-net
+
+  # 2. Traffic Shaping Automation Daemon (TSA)
+  kumo-tsa:
+    container_name: mailops-tsa
+    hostname: kumo-tsa
+    image: ghcr.io/kumocorp/kumomta:latest
+    restart: unless-stopped
+    command: ["runuser", "-u", "kumod", "--", "/opt/kumomta/sbin/tsa-daemon", "--policy", "/opt/kumomta/etc/policy/tsa_init.lua"]
+    volumes:
+      - ./policy:/opt/kumomta/etc/policy:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kumomta/sbin/validate-shaping /opt/kumomta/etc/policy/shaping.toml || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - mailops-net
+
+  # 3. Redis Cache (Rate-Limiting & Cluster State)
+  redis:
+    container_name: mailops-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - mailops-net
+
+  # 4. MAILOPS Control Plane Backend (Go)
+  backend:
+    container_name: mailops-backend
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../backend/data:/app/data
+      - ./policy:/app/policy
+      - ./logs:/var/log/kumomta:ro
+    environment:
+      - PORT=8080
+      - KUMO_API=http://kumomta:8000
+      - KUMO_SMTP=kumomta:2525
+      - REDIS_URL=redis:6379
+    depends_on:
+      - kumomta
+    networks:
+      - mailops-net
+
+  # 5. MAILOPS Web Desktop OS (Next.js)
+  web:
+    container_name: mailops-web
+    build:
+      context: ../../web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+    depends_on:
+      - backend
+    networks:
+      - mailops-net
+
+volumes:
+  redis-data:
+
+networks:
+  mailops-net:
+    driver: bridge

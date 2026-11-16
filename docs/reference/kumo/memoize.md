@@ -1,0 +1,150 @@
+# kumo.memoize
+
+```lua
+kumo.memoize(FUNCTION, { PARAMS })
+```
+
+This function allows you to create functions that cache the result of a
+computation.  This technique is known as
+[Memoization](https://en.wikipedia.org/wiki/Memoization).
+
+Here's a simple example; we have a sqlite lookup database that we intend to use
+for authentication, and we have already defined a helper function for that:
+
+```lua
+local sqlite = require 'sqlite'
+
+-- Consult a hypothetical sqlite database that has an auth table
+-- with user and pass fields
+function sqlite_auth_check(user, password)
+  local db = sqlite.open '/path/to/auth.db'
+  local result = db:execute(
+    'select user from auth where user=? and pass=?',
+    user,
+    password
+  )
+  -- if we return the username, it is because the password matched
+  return result[1] == user
+end
+
+kumo.on('smtp_server_auth_plain', function(authz, authc, password)
+  return sqlite_auth_check(authc, password)
+end)
+```
+
+Let's say, for the sake of example, that the query is very expensive: perhaps
+the IO cost is high and the query rate is also high and we want to save the iops
+for other work in the system.
+
+It would be nice if we could cache the lookup for some period of time.
+We can use `kumo.memoize` for this:
+
+```lua
+local sqlite = require 'sqlite'
+
+function sqlite_auth_check(user, password)
+  local db = sqlite.open '/tmp/auth.db'
+  local result = db:execute(
+    'select user from auth where user=? and pass=?',
+    user,
+    password
+  )
+  -- if we return the username, it is because the password matched
+  return result[1] == user
+end
+
+-- This creates a new function called `cached_sqlite_auth_check`
+-- that remembers the results for a given set of parameters for up
+-- to 5 minutes or up to 100 different sets of parameters
+cached_sqlite_auth_check = kumo.memoize(sqlite_auth_check, {
+  name = 'sqlite_auth',
+  ttl = '5 minutes',
+  capacity = 100,
+})
+
+kumo.on('smtp_server_auth_plain', function(authz, authc, password)
+  return cached_sqlite_auth_check(authc, password)
+end)
+```
+
+`kumo.memoize` takes a function or a lambda and wraps it up with some logic
+that will internally cache the result for the same set of parameters, and
+returns a new function that encodes that caching logic.  The return value is
+the *memoized function*.
+
+!!! note
+   The `kumo.memoize` call should happen *unconditionally* when your policy
+   loads in order for the memoized function to be callable in all circumstances.
+   In practice, this means that the call should take place at the file scope
+   in modules that you define, and *NOT* be called from within an event callback.
+   If you conditionally define the memoize function then the system will not
+   be able to run your population function in `detached` mode, which means that
+   the population function is eligible to be cancelled before completion if
+   one of the callers is cancelled (eg: the incoming SMTP/HTTP session is closed).
+
+The parameters it accepts are:
+
+* *FUNCTION* - the function or lambda which will be called when there is a cache miss.
+  When it is called, it will be passed the parameters that were passed to the *memoized function* in order to populate the cache.
+* *PARAMS* is a required lua table with the following fields, all of which are required:
+     * `name` - the name for the cache. You should create one name per function/purpose.
+     * `ttl` - the Time To Live for cache entries; how long a previously computed
+       value should remain valid.  The duration is expressed as a string like `5
+       minutes` or `10 seconds`.
+     * `capacity` - the total number of results to retain in the cache. When a new
+       entry needs to be inserted, if the cache is at capacity, the eldest entry
+       will be evicted to make space.
+     * `invalidate_with_epoch` - optional boolean that defaults to `false`.
+       If true, anything that bumps the config epoch (eg: config file changes,
+       TSA config overrides and so on) will invalidate the cache. {{since('2025.03.19-1d3f1f67', inline=True)}}
+     * `populate_timeout` - optional duration string. The effective default
+       value is `120 seconds`.  Specifies how long to allow the cache population
+       function to run before generating a timeout error. {{since('2025.05.06-b29689af', inline=True)}}
+     * `retry_on_populate_timeout` - optional boolean that defaults to `false`.
+       If `true`, if the `populate_timeout` is reached, then instead of generating
+       an error, memoize will retry the population attempt.
+       {{since('2025.05.06-b29689af', inline=True)}}
+     * `allow_stale_reads` - optional boolean that defaults to `false`.  If
+       `true` then `invalidate_with_epoch` will be assumed to `false` and a
+       cache lookup will be allowed to return with the last populated value in
+       the case that the item has expired and the cache population takes longer
+       than the `populate_timeout`. {{since('2025.05.06-b29689af', inline=True)}}
+     * `detached` - optional boolean.  {{since('dev', inline=True)}}
+       When `true`, a cache miss runs the cache population function on a
+       separate task, with a freshly loaded config context, rather than inline
+       on the calling task.  Running detached makes the completion of the cache
+       population independent of the triggering context, which is usually what
+       you want.  When running inline, the cache population function may be
+       cancelled prematurely as a consequence of the calling SMTP/HTTP session
+       being closed.  When you leave `detached` unspecified it resolves to
+       `true` for a call made at file scope and to `false` for a call made
+       from within an event handler.  Setting `detached = true` from within an
+       event handler is rejected with an error.
+
+       A call made at file scope while the policy is still loading (the
+       first load or a reload) always populates inline, regardless of the
+       default, because a detached populate reloads the policy to re-establish
+       the populate function, which would re-enter the in-progress load and
+       deadlock.  An explicit `detached = true` reached in that situation is a
+       hard error; call the cached function from an event handler instead, or
+       set `detached = false` if the populate is fast enough to run inline.
+
+In the example above calling:
+
+```lua
+cached_sqlite_auth_check('daniel', 'tiger')
+```
+
+the first time would be a cache miss, because no calls have yet been made with `{'daniel', 'tiger'}` as parameters, so the memoized function would internally call:
+
+```lua
+sqlite_auth_check('daniel', 'tiger')
+```
+
+The next time that `cached_sqlite_auth_check('daniel', 'tiger')` is called there
+is a cache hit and the previously computed result would be returned, provided that
+5 minutes have not expired since the first call.
+
+When the value expires, another call to `sqlite_auth_check('daniel', 'tiger')` will
+be made to determine the value.
+

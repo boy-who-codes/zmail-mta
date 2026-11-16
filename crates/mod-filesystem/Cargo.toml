@@ -1,0 +1,23 @@
+[package]
+name = "mod-filesystem"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+tempfile = {workspace=true}
+k9 = {workspace=true}
+
+[dependencies]
+filenamegen = {workspace=true}
+anyhow = {workspace=true}
+config = { path = "../config" }
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"]}
+tokio = {workspace=true}
+linkme.workspace = true
+lruttl = {path="../lruttl"}
+serde = {workspace=true}
+mod-time = {path="../mod-time"}
+chrono = {workspace=true}
+
+[lints]
+workspace = true

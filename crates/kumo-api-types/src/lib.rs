@@ -1,0 +1,881 @@
+use chrono::{DateTime, Utc};
+use cidr_map::CidrSet;
+use serde::{Deserialize, Serialize};
+use serde_with::formats::PreferOne;
+use serde_with::{serde_as, OneOrMany};
+use spool::SpoolId;
+use std::collections::HashMap;
+use std::time::Duration;
+use url::Url;
+use utoipa::{IntoParams, ToResponse, ToSchema};
+use uuid::Uuid;
+
+pub mod egress_path;
+pub mod rebind;
+pub mod shaping;
+pub mod tsa;
+pub mod xfer;
+
+/// Describes which messages should be bounced.
+/// The criteria apply to the scheduled queue associated
+/// with a given message.
+///
+/// !!! danger
+///     If you specify none of `domain`, `campaign`, `tenant`,
+///     `routing_domain` or `queue`, then **ALL** queues will
+///     be bounced.
+///
+///     With great power comes great responsibility!
+///
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BounceV1Request {
+    /// The campaign name to match. If omitted, any campaign will match.
+    #[serde(default)]
+    #[schema(example = "campaign_name")]
+    pub campaign: Option<String>,
+
+    /// The tenant to match. If omitted, any tenant will match.
+    #[serde(default)]
+    #[schema(example = "tenant_name")]
+    pub tenant: Option<String>,
+
+    /// The domain name to match. If omitted, any domain will match.
+    #[serde(default)]
+    #[schema(example = "example.com")]
+    pub domain: Option<String>,
+
+    /// The routing_domain name to match. If omitted, any routing_domain will match.
+    /// {{since('2023.08.22-4d895015', inline=True)}}
+    #[serde(default)]
+    #[schema(example = "routing_domain.com")]
+    pub routing_domain: Option<String>,
+
+    /// Reason to log in the delivery log. Each matching message will be bounced
+    /// with an AdminBounce record unless you suppress logging.
+    /// The reason will also be shown in the list of currently active admin
+    /// bounces.
+    #[schema(example = "Cleaning up a bad send")]
+    pub reason: String,
+
+    /// Defaults to "5m". Specifies how long this bounce directive remains active.
+    /// While active, newly injected messages that match the bounce criteria
+    /// will also be bounced.
+    #[serde(
+        default,
+        with = "duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(example = "20m")]
+    pub duration: Option<Duration>,
+
+    /// If true, do not generate AdminBounce delivery logs for matching
+    /// messages.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub suppress_logging: bool,
+
+    /// instead of specifying the duration, you can set an explicit
+    /// expiration timestamp
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
+
+    /// If present, queue_names takes precedence over `campaign`,
+    /// `tenant`, and `domain` and specifies the exact set of
+    /// scheduled queue names to which the bounce applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(example=json!(["campaign_name:tenant_name@example.com"]))]
+    pub queue_names: Vec<String>,
+}
+
+impl BounceV1Request {
+    pub fn duration(&self) -> Duration {
+        match &self.expires {
+            Some(exp) => (*exp - Utc::now()).to_std().unwrap_or(Duration::ZERO),
+            None => self.duration.unwrap_or_else(default_duration),
+        }
+    }
+}
+
+fn default_duration() -> Duration {
+    Duration::from_secs(300)
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct BounceV1Response {
+    /// The id of the bounce rule that was registered.
+    /// This can be used later to delete the rule if desired.
+    #[schema(example = "552016f1-08e7-4e90-9da3-fd5c25acd069")]
+    pub id: Uuid,
+    /// Deprecated: this field is no longer populated, as bounces
+    /// are now always asynchronous. In earlier versions the following
+    /// applies:
+    ///
+    /// A map of queue name to number of bounced messages that
+    /// were processed as part of the initial sweep.
+    /// Additional bounces may be generated if/when other messages
+    /// that match the rule are discovered, but those obviously
+    /// cannot be reported in the context of the initial request.
+    #[schema(deprecated, example=json!({
+        "gmail.com": 200,
+        "yahoo.com": 100
+    }))]
+    pub bounced: HashMap<String, usize>,
+    /// Deprecated: this field is no longer populated, as bounces are
+    /// now always asynchronous. In earlier versions the following applies:
+    ///
+    /// The sum of the number of bounced messages reported by
+    /// the `bounced` field.
+    #[schema(deprecated, example = 300)]
+    pub total_bounced: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SetDiagnosticFilterRequest {
+    /// The diagnostic filter spec to use
+    #[schema(example = "kumod=trace")]
+    pub filter: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct BounceV1ListEntry {
+    /// The id of this bounce rule. Corresponds to the `id` field
+    /// returned by the originating request that set up the bounce,
+    /// and can be used to identify this particular entry if you
+    /// wish to delete it later.
+    #[schema(example = "552016f1-08e7-4e90-9da3-fd5c25acd069")]
+    pub id: Uuid,
+
+    /// The campaign field of the original request, if any.
+    #[serde(default)]
+    #[schema(example = "campaign_name")]
+    pub campaign: Option<String>,
+    /// The tenant field of the original request, if any.
+    #[serde(default)]
+    #[schema(example = "tenant_name")]
+    pub tenant: Option<String>,
+    /// The domain field of the original request, if any.
+    #[serde(default)]
+    #[schema(example = "example.com")]
+    pub domain: Option<String>,
+    /// The routing_domain field of the original request, if any.
+    #[serde(default)]
+    #[schema(example = "routing_domain.com")]
+    pub routing_domain: Option<String>,
+
+    /// The reason field of the original request
+    #[schema(example = "cleaning up a bad send")]
+    pub reason: String,
+
+    /// The time remaining until this entry expires and is automatically
+    /// removed.
+    #[serde(with = "duration_serde")]
+    pub duration: Duration,
+
+    /// A map of queue name to number of bounced messages that
+    /// were processed by this entry since it was created.
+    #[schema(example=json!({
+        "gmail.com": 200,
+        "yahoo.com": 100
+    }))]
+    pub bounced: HashMap<String, usize>,
+    /// The sum of the number of bounced messages reported by
+    /// the `bounced` field.
+    pub total_bounced: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct BounceV1CancelRequest {
+    pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SpoolCompactV1Request {
+    /// Name of the spool to compact, matching a `kumo.define_spool` name.
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SuspendV1Request {
+    /// The campaign name to match. If omitted, any campaign will match.
+    #[serde(default)]
+    #[schema(example = "campaign_name")]
+    pub campaign: Option<String>,
+    /// The tenant name to match. If omitted, any tenant will match.
+    #[serde(default)]
+    #[schema(example = "tenant_name")]
+    pub tenant: Option<String>,
+    /// The domain name to match. If omitted, any domain will match.
+    #[serde(default)]
+    #[schema(example = "example.com")]
+    pub domain: Option<String>,
+
+    /// The reason for the suspension
+    #[schema(example = "pause while working on resolving a block with the destination postmaster")]
+    pub reason: String,
+
+    /// Specifies how long this suspension remains active.
+    #[serde(
+        default,
+        with = "duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub duration: Option<Duration>,
+
+    /// instead of specifying the duration, you can set an explicit
+    /// expiration timestamp
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
+
+    /// If present, queue_names takes precedence over `campaign`,
+    /// `tenant`, and `domain` and specifies the exact set of
+    /// scheduled queue names to which the suspension applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(example=json!(["campaign_name:tenant_name@example.com"]))]
+    pub queue_names: Vec<String>,
+}
+
+impl SuspendV1Request {
+    pub fn duration(&self) -> Duration {
+        match &self.expires {
+            Some(exp) => (*exp - Utc::now()).to_std().unwrap_or(Duration::ZERO),
+            None => self.duration.unwrap_or_else(default_duration),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct SuspendV1Response {
+    /// The id of the suspension. This can be used later to cancel
+    /// the suspension.
+    pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SuspendV1CancelRequest {
+    /// The id of the suspension to cancel
+    pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct InjectV1Response {
+    /// The number of messages that were injected successfully
+    pub success_count: usize,
+    /// The number of messages that failed to inject
+    pub fail_count: usize,
+
+    /// The list of failed recipients
+    #[schema(format = "email")]
+    pub failed_recipients: Vec<String>,
+
+    /// The list of error messages
+    pub errors: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SuspendV1ListEntry {
+    /// The id of the suspension. This can be used later to cancel
+    /// the suspension.
+    pub id: Uuid,
+
+    /// The campaign name to match. If omitted, any campaign will match.
+    #[serde(default)]
+    #[schema(example = "campaign_name")]
+    pub campaign: Option<String>,
+    /// The tenant name to match. If omitted, any tenant will match.
+    #[serde(default)]
+    #[schema(example = "tenant_name")]
+    pub tenant: Option<String>,
+    /// The domain name to match. If omitted, any domain will match.
+    #[serde(default)]
+    #[schema(example = "example.com")]
+    pub domain: Option<String>,
+
+    /// The reason for the suspension
+    #[schema(example = "pause while working on resolving a deliverability issue")]
+    pub reason: String,
+
+    #[serde(with = "duration_serde")]
+    /// Specifies how long this suspension remains active.
+    pub duration: Duration,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct SuspendReadyQueueV1Request {
+    /// The name of the ready queue that should be suspended
+    #[schema(
+        example = "source_name->(alt1|alt2|alt3|alt4)?.gmail-smtp-in.l.google.com@smtp_client"
+    )]
+    pub name: String,
+    /// The reason for the suspension
+    #[schema(example = "pause while working on resolving a block with the destination postmaster")]
+    pub reason: String,
+    /// Specifies how long this suspension remains active.
+    #[serde(
+        default,
+        with = "duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub duration: Option<Duration>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
+}
+
+impl SuspendReadyQueueV1Request {
+    pub fn duration(&self) -> Duration {
+        if let Some(expires) = &self.expires {
+            let duration = expires.signed_duration_since(Utc::now());
+            duration.to_std().unwrap_or(Duration::ZERO)
+        } else {
+            self.duration.unwrap_or_else(default_duration)
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema, PartialEq, Eq)]
+pub struct SuspendReadyQueueV1ListEntry {
+    /// The id for the suspension. Can be used to cancel the suspension.
+    pub id: Uuid,
+    /// The name of the ready queue that is suspended
+    #[schema(
+        example = "source_name->(alt1|alt2|alt3|alt4)?.gmail-smtp-in.l.google.com@smtp_client"
+    )]
+    pub name: String,
+    /// The reason for the suspension
+    #[schema(example = "pause while working on resolving a block with the destination postmaster")]
+    pub reason: String,
+
+    /// how long until this suspension expires and is automatically removed
+    #[serde(with = "duration_serde")]
+    pub duration: Duration,
+
+    /// The time at which the suspension will expire
+    pub expires: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, Debug, IntoParams, ToSchema)]
+pub struct InspectMessageV1Request {
+    /// The spool identifier for the message whose information
+    /// is being requested
+    pub id: SpoolId,
+    /// If true, return the message body in addition to the
+    /// metadata
+    #[serde(default)]
+    pub want_body: bool,
+}
+
+pub trait ApplyToUrl {
+    fn apply_to_url(&self, url: &mut Url);
+}
+
+impl ApplyToUrl for InspectMessageV1Request {
+    fn apply_to_url(&self, url: &mut Url) {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("id", &self.id.to_string());
+        if self.want_body {
+            query.append_pair("want_body", "true");
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct InspectMessageV1Response {
+    /// The spool identifier of the message
+    pub id: SpoolId,
+    /// The message information
+    pub message: MessageInformation,
+}
+
+#[derive(Serialize, Deserialize, Debug, IntoParams, ToSchema)]
+pub struct InspectQueueV1Request {
+    /// The name of the scheduled queue
+    #[schema(example = "campaign_name:tenant_name@example.com")]
+    pub queue_name: String,
+    /// If true, return the message body in addition to the
+    /// metadata
+    #[serde(default)]
+    pub want_body: bool,
+
+    /// Return up to `limit` messages in the queue sample.
+    /// Depending on the strategy configured for the queue,
+    /// messages may not be directly reachable via this endpoint.
+    /// If no limit is provided, all messages in the queue will
+    /// be sampled.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl ApplyToUrl for InspectQueueV1Request {
+    fn apply_to_url(&self, url: &mut Url) {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("queue_name", &self.queue_name.to_string());
+        if self.want_body {
+            query.append_pair("want_body", "true");
+        }
+        if let Some(limit) = self.limit {
+            query.append_pair("limit", &limit.to_string());
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct InspectQueueV1Response {
+    #[schema(example = "campaign_name:tenant_name@example.com")]
+    pub queue_name: String,
+    pub messages: Vec<InspectMessageV1Response>,
+    pub num_scheduled: usize,
+    #[schema(value_type=Object)]
+    pub queue_config: serde_json::Value,
+    pub delayed_metric: usize,
+    pub now: DateTime<Utc>,
+    pub last_changed: DateTime<Utc>,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct MessageInformation {
+    /// The envelope sender
+    #[schema(example = "sender@sender.example.com")]
+    pub sender: String,
+    /// The envelope-to address.
+    /// May be either an individual string or an array of strings
+    /// for multi-recipient messages.
+    #[schema(example = "recipient@example.com", format = "email")]
+    #[serde_as(as = "OneOrMany<_, PreferOne>")] // FIXME: json schema
+    pub recipient: Vec<String>,
+    /// The message metadata
+    #[schema(value_type=Object, example=json!({
+        "received_from": "10.0.0.1:3488"
+    }))]
+    pub meta: serde_json::Value,
+    /// If `want_body` was set in the original request,
+    /// holds the message body
+    #[serde(default)]
+    #[schema(example = "From: user@example.com\nSubject: Hello\n\nHello there")]
+    pub data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_attempts: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type=Object)]
+    pub scheduling: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct TraceSmtpV1Request {
+    #[serde(default)]
+    #[schema(value_type=Option<Vec<String>>)]
+    pub source_addr: Option<CidrSet>,
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub terse: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, ToSchema)]
+pub struct TraceSmtpV1Event {
+    pub conn_meta: serde_json::Value,
+    pub payload: TraceSmtpV1Payload,
+    pub when: DateTime<Utc>,
+}
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, Debug, ToSchema, PartialEq)]
+pub enum TraceSmtpV1Payload {
+    Connected,
+    Closed,
+    Read(String),
+    Write(String),
+    Diagnostic {
+        level: String,
+        message: String,
+    },
+    Callback {
+        name: String,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    },
+    MessageDisposition {
+        relay: bool,
+        log_arf: serde_json::Value,
+        log_oob: serde_json::Value,
+        queue: String,
+        meta: serde_json::Value,
+        #[schema(format = "email")]
+        sender: String,
+        #[serde_as(as = "OneOrMany<_, PreferOne>")] // FIXME: json schema
+        #[schema(format = "email")]
+        recipient: Vec<String>,
+        id: SpoolId,
+        #[serde(default)]
+        was_arf_or_oob: Option<bool>,
+        #[serde(default)]
+        will_enqueue: Option<bool>,
+    },
+    /// Like `Read`, but abbreviated by `terse`
+    AbbreviatedRead {
+        /// The "first" or more relevant line(s)
+        snippet: String,
+        /// Total size of data being read
+        len: usize,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, ToSchema)]
+pub struct TraceSmtpClientV1Event {
+    pub conn_meta: serde_json::Value,
+    pub payload: TraceSmtpClientV1Payload,
+    pub when: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, ToSchema, PartialEq)]
+pub enum TraceSmtpClientV1Payload {
+    BeginSession,
+    Connected,
+    Closed,
+    Read(String),
+    Write(String),
+    Diagnostic {
+        level: String,
+        message: String,
+    },
+    MessageObtained,
+    /// Like `Write`, but abbreviated by `terse`
+    AbbreviatedWrite {
+        /// The "first" or more relevant line(s)
+        snippet: String,
+        /// Total size of data being read
+        len: usize,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, ToSchema)]
+pub struct TraceSmtpClientV1Request {
+    /// The campaign name to match. If omitted, any campaign will match.
+    #[serde(default)]
+    #[schema(example = "campaign_name")]
+    pub campaign: Vec<String>,
+
+    /// The tenant to match. If omitted, any tenant will match.
+    #[serde(default)]
+    #[schema(example = "tenant_name")]
+    pub tenant: Vec<String>,
+
+    /// The domain name to match. If omitted, any domain will match.
+    #[serde(default)]
+    #[schema(example = "example.com")]
+    pub domain: Vec<String>,
+
+    /// The routing_domain name to match. If omitted, any routing_domain will match.
+    #[serde(default)]
+    #[schema(example = "routing_domain.com")]
+    pub routing_domain: Vec<String>,
+
+    /// The egress pool name to match. If omitted, any egress pool will match.
+    #[serde(default)]
+    #[schema(example = "pool_name")]
+    pub egress_pool: Vec<String>,
+
+    /// The egress source name to match. If omitted, any egress source will match.
+    #[serde(default)]
+    #[schema(example = "source_name")]
+    pub egress_source: Vec<String>,
+
+    /// The envelope sender to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(format = "email")]
+    pub mail_from: Vec<String>,
+
+    /// The envelope recipient to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(format = "email")]
+    pub rcpt_to: Vec<String>,
+
+    /// The source address to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(value_type=Option<Vec<String>>, example="10.0.0.1/16")]
+    pub source_addr: Option<CidrSet>,
+
+    /// The mx hostname to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(format = "mx1.example.com")]
+    pub mx_host: Vec<String>,
+
+    /// The ready queue name to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(
+        example = "source_name->(alt1|alt2|alt3|alt4)?.gmail-smtp-in.l.google.com@smtp_client"
+    )]
+    pub ready_queue: Vec<String>,
+
+    /// The mx ip address to match. If omitted, any will match.
+    #[serde(default)]
+    #[schema(value_type=Option<Vec<String>>, example="10.0.0.1/16")]
+    pub mx_addr: Option<CidrSet>,
+
+    /// Use a more terse representation of the data, focusing on the first
+    /// line of larger writes
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub terse: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToSchema, IntoParams)]
+pub struct ReadyQueueStateRequest {
+    /// Which queues to request. If empty, request all queue states.
+    #[serde(default)]
+    #[schema(example=json!(["campaign_name:tenant_name@example.com"]))]
+    pub queues: Vec<String>,
+}
+
+impl ApplyToUrl for ReadyQueueStateRequest {
+    fn apply_to_url(&self, url: &mut Url) {
+        let mut query = url.query_pairs_mut();
+        if !self.queues.is_empty() {
+            query.append_pair("queues", &self.queues.join(","));
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct QueueState {
+    #[schema(example = "TooManyLeases for queue")]
+    pub context: String,
+    pub since: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct ReadyQueueStateResponse {
+    pub states_by_ready_queue: HashMap<String, HashMap<String, QueueState>>,
+}
+
+/// Phase of a dispatcher task within a ready queue.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub enum DispatcherPhase {
+    Starting,
+    AcquiringLease { label: String },
+    Idle,
+    AccumulatingBatch { have: u32, want: u32 },
+    ConnectionRateThrottled,
+    MessageRateThrottled,
+    AttemptingConnection,
+    DeliveringMessage,
+    Closing,
+}
+
+/// Query parameters for the inspect-ready-q endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, IntoParams, ToSchema)]
+pub struct InspectReadyQV1Request {
+    /// The name of the ready queue to inspect.
+    #[schema(example = "unspecified->gmail.com@smtp_client")]
+    pub queue_name: String,
+    /// When true, the response includes the list of scheduled queue
+    /// names that have promoted messages into this ready queue.
+    /// Walking the set is bounded but proportional to the number of
+    /// live scheduled queues, so the field is opt-in.
+    #[serde(default)]
+    pub include_scheduled_queues: bool,
+}
+
+impl ApplyToUrl for InspectReadyQV1Request {
+    fn apply_to_url(&self, url: &mut Url) {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("queue_name", &self.queue_name);
+        if self.include_scheduled_queues {
+            query.append_pair("include_scheduled_queues", "true");
+        }
+    }
+}
+
+/// Snapshot of the operational state of a ready queue.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct ReadyQueueStateSnapshot {
+    pub ready_count: usize,
+    pub connection_count: usize,
+    pub connection_rate_throttled: Option<QueueState>,
+    pub connection_limited: Option<QueueState>,
+    pub suspended: Option<SuspendReadyQueueV1ListEntry>,
+    /// Effective progress watchdog timeout for this queue, honoring
+    /// the per-egress-path config or the protocol-derived default.
+    #[serde(with = "duration_serde")]
+    pub watchdog_threshold: Duration,
+}
+
+/// Per-dispatcher summary returned by the inspect-ready-q endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct DispatcherSummary {
+    pub session_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    #[serde(with = "duration_serde")]
+    pub age: Duration,
+    pub phase: DispatcherPhase,
+    pub detail: Option<String>,
+    #[serde(with = "duration_serde")]
+    pub time_in_current_phase: Duration,
+    pub messages_delivered: u64,
+    pub messages_transfailed: u64,
+    pub messages_failed: u64,
+    pub delivered_this_connection: u64,
+    pub overall_rate_per_sec: f64,
+}
+
+/// Response body for the inspect-ready-q endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct InspectReadyQV1Response {
+    pub queue_name: String,
+    /// MX resolution result for the destination. `None` for
+    /// protocols that don't use MX (e.g. Lua-protocol queues) or
+    /// when MX resolution wasn't applicable.
+    pub mx: Option<crate::egress_path::MxResolution>,
+    pub egress_source: String,
+    pub egress_pool: String,
+    /// Protocol identifier as it appears in the ready queue name.
+    #[schema(example = "smtp_client")]
+    pub protocol: String,
+    pub state: ReadyQueueStateSnapshot,
+    /// Snapshot of the egress path configuration in effect for this
+    /// queue.
+    #[schema(value_type = Object)]
+    pub path_config: crate::egress_path::EgressPathConfig,
+    /// Steady-state throughput ceilings implied by `path_config`.
+    /// Each axis is tagged with the configuration term that
+    /// produced it, so operators can tell whether a plateau in the
+    /// observed rate is the result of shaping configuration or the
+    /// remote side.
+    pub constraints: crate::egress_path::EffectiveConstraints,
+    /// Scheduled queue names that currently feed this ready queue.
+    /// Populated only when the request's `include_scheduled_queues`
+    /// flag is true; otherwise None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_queue_names: Option<Vec<String>>,
+    pub dispatchers: Vec<DispatcherSummary>,
+    pub now: DateTime<Utc>,
+}
+
+/// Request body for the abort-ready-q-conn endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct AbortReadyQConnV1Request {
+    pub queue_name: String,
+    pub session_id: Uuid,
+}
+
+/// Query parameters for the resolve-egress-path endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, IntoParams, ToSchema)]
+pub struct ResolveEgressPathV1Request {
+    /// Destination domain. Drives the MX lookup and is passed
+    /// through to the `get_egress_path_config` event callback.
+    #[schema(example = "gmail.com")]
+    pub domain: String,
+
+    /// Egress source name. Defaults to "unspecified" if omitted.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+impl ApplyToUrl for ResolveEgressPathV1Request {
+    fn apply_to_url(&self, url: &mut Url) {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("domain", &self.domain);
+        if let Some(source) = &self.source {
+            query.append_pair("source", source);
+        }
+    }
+}
+
+/// Response body for the resolve-egress-path endpoint.
+///
+/// {{since('2026.09.22-a276d4a8')}}
+#[derive(Serialize, Deserialize, Debug, ToResponse, ToSchema)]
+pub struct ResolveEgressPathV1Response {
+    pub domain: String,
+    pub source: String,
+    /// MX resolution result. `None` when MX lookup wasn't applicable
+    /// (e.g. non-SMTP protocols) or failed (e.g. internal sentinel
+    /// domains, network errors).
+    pub mx: Option<crate::egress_path::MxResolution>,
+    /// The ready-queue name that this domain/source pair would
+    /// resolve to. Lets the caller pivot to inspect-ready-q for
+    /// live runtime detail when the queue exists.
+    pub queue_name: String,
+    /// Snapshot of the resolved scheduled-queue configuration for
+    /// this domain. Carried as an untyped JSON object because
+    /// `QueueConfig` contains protocol variants that don't all
+    /// round-trip cleanly through the OpenAPI schema.
+    #[schema(value_type = Object)]
+    pub queue_config: serde_json::Value,
+    #[schema(value_type = Object)]
+    pub path_config: crate::egress_path::EgressPathConfig,
+    pub constraints: crate::egress_path::EffectiveConstraints,
+}
+
+#[derive(Serialize, Clone, Deserialize, Debug, PartialEq, ToSchema)]
+pub struct MachineInfoV1 {
+    /// The NodeID of the system
+    #[schema(example = "9745bb48-14d7-48f2-a1fb-7df8d5844217")]
+    pub node_id: String,
+    /// The hostname of the system, as reported by `gethostname(2)`
+    #[schema(example = "mta1.example.com")]
+    pub hostname: String,
+    /// The MAC address of the primary, non-loopback, network interface
+    #[schema(example = "02:02:02:02:02:02")]
+    pub mac_address: String,
+    /// The number of available CPUs as reported by
+    /// <https://docs.rs/num_cpus/latest/num_cpus/fn.get.html>
+    #[schema(example = 64)]
+    pub num_cores: usize,
+    /// The kernel version
+    #[schema(example = "6.8.0-1016-aws")]
+    pub kernel_version: Option<String>,
+    /// Identifies the running platform
+    #[schema(example = "linux/x86_64")]
+    pub platform: String,
+    /// The OS distribution
+    #[schema(example = "ubuntu")]
+    pub distribution: String,
+    /// The OS version (which often includes the distribution)
+    #[schema(example = "Linux (Ubuntu 24.04)")]
+    pub os_version: String,
+    /// Total physical memory installed in the instance
+    #[schema(example = 1003929600)]
+    pub total_memory_bytes: u64,
+    /// If we detected that we're running in a container, the name
+    /// of the container runtime
+    pub container_runtime: Option<String>,
+    /// Identifies the CPU.  If you have a mixture of different CPUs,
+    /// this will be a comma separated list of the different CPUs
+    #[schema(example = "Intel(R) Xeon(R) CPU E5-2686 v4 @ 2.30GHz")]
+    pub cpu_brand: String,
+    /// Additional metadata hash(es) that can identify the running machine.
+    /// For example, when running in AWS, the instance-id will be
+    /// included.
+    #[schema(
+        example = "aws_instance_id=i-09aebefac97cf0000,machine_uid=ec22130d1de33cf52413457ac040000"
+    )]
+    pub fingerprint: String,
+    /// The date/time at which the process was last started
+    pub online_since: DateTime<Utc>,
+    /// Which process is running. eg: `kumod` vs `tsa-daemon` vs. `proxy-server`.
+    #[schema(example = "kumod")]
+    pub process_kind: String,
+    /// The version of KumoMTA that is running
+    #[schema(example = "2026.02.24-2d1a3174")]
+    pub version: String,
+}

@@ -1,0 +1,25 @@
+[package]
+name = "throttle"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["redis"]
+redis = ["dep:redis-cell-impl", "dep:mod-redis"]
+
+[dependencies]
+anyhow = {workspace=true}
+mod-redis = {path="../mod-redis", optional=true}
+parking_lot.workspace = true
+redis-cell-impl = { git = "https://github.com/wez/redis-cell.git", rev="97d409c3a62f2a0f5518c31fc9b4b65afbce2053" , optional=true}
+serde = {workspace=true}
+thiserror = {workspace=true}
+tokio = {workspace=true, features=["full"]}
+uuid = {workspace=true, features=["v4", "fast-rng"]}
+
+[dev-dependencies]
+serde_json = {workspace=true}
+which = {workspace=true}
+
+[lints]
+workspace = true

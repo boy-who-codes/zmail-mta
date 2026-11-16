@@ -1,0 +1,513 @@
+use crate::logging::{LogCommand, LogRecordParams};
+use anyhow::Context;
+use chrono::Utc;
+use flume::Receiver;
+pub use kumo_log_types::*;
+use kumo_prometheus::declare_metric;
+use kumo_server_common::disk_space::MinFree;
+use kumo_server_common::log::{mark_existing_logs_as_done_in_dir, OpenedFile};
+use kumo_server_memory::subscribe_to_memory_status_changes_async;
+use kumo_template::{Template, TemplateEngine};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use zstd::stream::write::Encoder;
+
+declare_metric! {
+/// how many log records were dropped for exceeding max_record_size
+static RECORD_TOO_LARGE: CounterVec(
+        "log_record_dropped_too_large",
+        &["log_dir"]
+    );
+}
+
+/// Minimum spacing between the error-level warnings emitted when oversized
+/// records are dropped, so a burst of them cannot flood the logs.
+const OVERSIZE_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct LogFileParams {
+    /// Where to place the log files
+    pub log_dir: PathBuf,
+    /// How many uncompressed bytes to allow per file segment
+    #[serde(default = "LogFileParams::default_max_file_size")]
+    pub max_file_size: u64,
+    /// Maximum number of outstanding items to be logged before
+    /// the submission will block; helps to avoid runaway issues
+    /// spiralling out of control.
+    #[serde(default = "LogFileParams::default_back_pressure")]
+    pub back_pressure: usize,
+
+    /// The level of compression.
+    /// 0 - use the zstd default level (probably 3).
+    /// 1-21 are the explicitly configurable levels
+    #[serde(default = "LogFileParams::default_compression_level")]
+    pub compression_level: i32,
+
+    #[serde(default, with = "duration_serde")]
+    pub max_segment_duration: Option<Duration>,
+
+    /// The largest a record and its newline separator may be, in bytes. A
+    /// record that does not fit within it is dropped. Defaults to
+    /// `kumo_jsonl::DEFAULT_MAX_LINE_SIZE`, matching the default a tailer
+    /// accepts.
+    #[serde(default = "LogFileParams::default_max_record_size")]
+    pub max_record_size: usize,
+
+    /// List of meta fields to capture in the log
+    #[serde(default)]
+    pub meta: Vec<String>,
+
+    /// List of message headers to capture in the log
+    #[serde(default)]
+    pub headers: Vec<String>,
+
+    #[serde(default)]
+    pub per_record: HashMap<RecordType, LogRecordParams>,
+
+    /// The name of an event which can be used to filter
+    /// out log records which should not be logged to this
+    /// log file
+    #[serde(default)]
+    pub filter_event: Option<String>,
+
+    #[serde(default)]
+    pub min_free_space: MinFree,
+    #[serde(default)]
+    pub min_free_inodes: MinFree,
+}
+
+impl LogFileParams {
+    pub fn default_max_file_size() -> u64 {
+        1_000_000_000
+    }
+    pub fn default_max_record_size() -> usize {
+        kumo_jsonl::DEFAULT_MAX_LINE_SIZE
+    }
+    pub fn default_back_pressure() -> usize {
+        128_000
+    }
+    pub fn default_compression_level() -> i32 {
+        0 // use the zstd default
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct FileNameKey {
+    log_dir: PathBuf,
+    suffix: Option<String>,
+}
+
+pub struct LogThreadState {
+    pub params: LogFileParams,
+    pub receiver: Receiver<LogCommand>,
+    pub template_engine: TemplateEngine,
+    pub file_map: HashMap<FileNameKey, OpenedFile>,
+    /// Number of oversized records dropped since `last_oversize_warning` was
+    /// last set. Reset to 0 each time a warning is logged.
+    pub oversize_dropped: u64,
+    /// When the oversized-record warning was last logged. Used with
+    /// `oversize_dropped` to enforce OVERSIZE_WARN_INTERVAL.
+    pub last_oversize_warning: Option<Instant>,
+}
+
+impl LogThreadState {
+    pub async fn logger_thread(&mut self) {
+        tracing::debug!("LogFileParams: {:#?}", self.params);
+
+        if !config::is_validating() {
+            self.mark_existing_logs_as_done();
+        }
+        let mut expire_counter = 0u16;
+
+        let mut memory_status = subscribe_to_memory_status_changes_async().await;
+
+        loop {
+            let deadline = self.get_deadline();
+            tracing::debug!("waiting until deadline={deadline:?} for a log record");
+
+            let cmd = if let Some(deadline) = deadline {
+                tokio::select! {
+                    cmd = self.receiver.recv_async() => {
+                        // If we are super busy and always have another command immediately
+                        // available, we need to take the opportunity to notice when
+                        // segments expire.
+                        // We check every so many events so that we're not spending excessive
+                        // amounts of processing considering this.
+                        // When we go idle, we'll take the other branch and notice.
+                        expire_counter = expire_counter.wrapping_add(1);
+                        if expire_counter == 10_000 {
+                            self.expire();
+                            expire_counter = 0;
+                        }
+                        cmd
+                    }
+                    _ = memory_status.changed() => {
+                        if kumo_server_memory::get_headroom() == 0 {
+                            tracing::debug!("memory is short, flushing open logs");
+                            self.file_map.clear();
+                        }
+
+                        continue;
+                    }
+                    _ = tokio::time::sleep_until(deadline.into()) => {
+                        tracing::debug!("deadline reached, running expiration for this segment");
+                        self.expire();
+                        continue;
+                    }
+                }
+            } else {
+                self.receiver.recv_async().await
+            };
+            let cmd = match cmd {
+                Ok(cmd) => cmd,
+                other => {
+                    tracing::debug!("logging channel closed {other:?}");
+                    return;
+                }
+            };
+            match cmd {
+                LogCommand::Terminate => {
+                    tracing::debug!("LogCommand::Terminate received. Stopping writing logs");
+                    break;
+                }
+                LogCommand::Record(record, _msg) => {
+                    if let Err(err) = self.do_record(record) {
+                        tracing::error!("failed to log: {err:#}");
+                    };
+                }
+            }
+        }
+
+        tracing::debug!("Clearing any buffered files prior to completion");
+        self.file_map.clear();
+    }
+
+    fn mark_existing_logs_as_done(&self) {
+        if let Err(err) = mark_existing_logs_as_done_in_dir(&self.params.log_dir) {
+            tracing::error!("Error: {err:#}");
+        }
+        for params in self.params.per_record.values() {
+            if let Some(log_dir) = &params.log_dir {
+                if let Err(err) = mark_existing_logs_as_done_in_dir(log_dir) {
+                    tracing::error!("Error: {err:#}");
+                }
+            }
+        }
+    }
+
+    fn expire(&mut self) {
+        let now = Instant::now();
+        self.file_map.retain(|_, of| match of.expires {
+            Some(exp) => {
+                tracing::trace!("check {exp:?} vs {now:?} -> {}", exp > now);
+                exp > now
+            }
+            None => true,
+        });
+    }
+
+    fn get_deadline(&self) -> Option<Instant> {
+        self.file_map.values().filter_map(|of| of.expires).min()
+    }
+
+    fn per_record(&self, kind: RecordType) -> Option<&LogRecordParams> {
+        self.params
+            .per_record
+            .get(&kind)
+            .or_else(|| self.params.per_record.get(&RecordType::Any))
+    }
+
+    fn resolve_template(
+        params: &LogFileParams,
+        template_engine: &TemplateEngine,
+        kind: RecordType,
+    ) -> Option<Template> {
+        if let Some(pr) = params.per_record.get(&kind) {
+            if pr.template.is_some() {
+                let label = format!("{kind:?}");
+                return template_engine.get_template(&label).ok();
+            }
+            return None;
+        }
+        if let Some(pr) = params.per_record.get(&RecordType::Any) {
+            if pr.template.is_some() {
+                return template_engine.get_template("Any").ok();
+            }
+        }
+        None
+    }
+
+    /// Record a dropped oversized record: bump the metric always, and emit an
+    /// error-level warning at most once per OVERSIZE_WARN_INTERVAL. The warning
+    /// contains only identifying metadata (kind, id, size).
+    fn note_oversize_drop(
+        &mut self,
+        log_dir: &std::path::Path,
+        kind: RecordType,
+        id: &str,
+        len: usize,
+        max: usize,
+    ) {
+        let log_dir = log_dir.display().to_string();
+        if let Ok(metric) = RECORD_TOO_LARGE.get_metric_with_label_values(&[&log_dir]) {
+            metric.inc();
+        }
+        self.oversize_dropped += 1;
+
+        let now = Instant::now();
+        let due = self
+            .last_oversize_warning
+            .map(|last| now.duration_since(last) >= OVERSIZE_WARN_INTERVAL)
+            .unwrap_or(true);
+        if due {
+            tracing::error!(
+                "dropped {} log record(s) exceeding max_record_size of {max} bytes in {log_dir}; \
+                 most recent: kind={kind:?} id={id} size={len} bytes",
+                self.oversize_dropped
+            );
+            self.oversize_dropped = 0;
+            self.last_oversize_warning = Some(now);
+        }
+    }
+
+    fn do_record(&mut self, record: JsonLogRecord) -> anyhow::Result<()> {
+        tracing::trace!("do_record {record:?}");
+        let record = Arc::new(record);
+        let file_key = if let Some(per_rec) = self.per_record(record.kind) {
+            FileNameKey {
+                log_dir: per_rec
+                    .log_dir
+                    .as_deref()
+                    .unwrap_or(&self.params.log_dir)
+                    .to_path_buf(),
+                suffix: per_rec.suffix.clone(),
+            }
+        } else {
+            // Just use the global settings
+            FileNameKey {
+                log_dir: self.params.log_dir.clone(),
+                suffix: None,
+            }
+        };
+
+        let mut record_text = Vec::new();
+        if let Some(template) =
+            Self::resolve_template(&self.params, &self.template_engine, record.kind)
+        {
+            let prepared = self
+                .template_engine
+                .prepare_context_with_alias(record.clone(), "log_record")?;
+            record_text = template.render_prepared(&prepared)?.into_bytes();
+        } else {
+            serde_json::to_writer(&mut record_text, &*record).context("serializing record")?;
+        }
+        if record_text.last() != Some(&b'\n') {
+            record_text.push(b'\n');
+        }
+
+        // record_text ends in the newline separator, which does not count
+        // toward the record itself. Since a reader buffer holds at most
+        // `max_record_size` bytes and a complete line needs the record content
+        // plus that separator, content of exactly `max_record_size` bytes
+        // doesn't leave room for it and is dropped along with anything larger.
+        let max = self.params.max_record_size;
+        let len = record_text.len().saturating_sub(1);
+        if len >= max {
+            self.note_oversize_drop(&file_key.log_dir, record.kind, &record.id, len, max);
+            return Ok(());
+        }
+
+        if !self.file_map.contains_key(&file_key) {
+            let now = Utc::now();
+
+            let mut base_name = now.format("%Y%m%d-%H%M%S%.f").to_string();
+            if let Some(suffix) = &file_key.suffix {
+                base_name.push_str(suffix);
+            }
+
+            let name = file_key.log_dir.join(base_name);
+            // They might be trying to use multiple directories below
+            // the configured log_dir, so adjust our idea of its parent
+            // dir
+            let log_dir = name
+                .parent()
+                .expect("log_dir.join ensures we always have a parent");
+
+            let f = match std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&name)
+            {
+                Ok(f) => f,
+                Err(err) => {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        match std::fs::create_dir_all(log_dir) {
+                            Ok(_) => {
+                                // Try opening it again now
+                                std::fs::OpenOptions::new()
+                                    .append(true)
+                                    .create(true)
+                                    .open(&name)
+                                    .with_context(|| format!("open log file {name:?}"))?
+                            }
+                            Err(dir_err) => {
+                                anyhow::bail!(
+                                    "open log file {name:?}: failed: {err:#?}. \
+                                    Additionally, attempting to create dir {} failed: {dir_err:#?}",
+                                    log_dir.display()
+                                );
+                            }
+                        }
+                    } else {
+                        anyhow::bail!("open log file {name:?}: failed: {err:#?}");
+                    }
+                }
+            };
+
+            let mut file = OpenedFile {
+                file: Encoder::new(f, self.params.compression_level)
+                    .context("set up zstd encoder")?,
+                name,
+                written: 0,
+                expires: self
+                    .params
+                    .max_segment_duration
+                    .map(|duration| Instant::now() + duration),
+            };
+
+            if let Some(per_rec) = self.per_record(record.kind) {
+                if !per_rec.segment_header.is_empty() {
+                    file.file
+                        .write_all(per_rec.segment_header.as_bytes())
+                        .with_context(|| {
+                            format!(
+                                "writing segment header to newly opened segment file {}",
+                                file.name.display()
+                            )
+                        })?;
+                }
+            }
+
+            self.file_map.insert(file_key.clone(), file);
+        }
+
+        let mut need_rotate = false;
+
+        if let Some(file) = self.file_map.get_mut(&file_key) {
+            file.file
+                .write_all(&record_text)
+                .with_context(|| format!("writing record to {}", file.name.display()))?;
+            file.written += record_text.len() as u64;
+
+            need_rotate = file.written >= self.params.max_file_size
+                || file
+                    .expires
+                    .map(|exp| exp <= Instant::now())
+                    .unwrap_or(false);
+        }
+
+        if need_rotate {
+            self.file_map.remove(&file_key);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use flume::bounded;
+    use rfc5321::Response;
+
+    fn state(log_dir: PathBuf, max_record_size: usize) -> LogThreadState {
+        let params: LogFileParams = serde_json::from_value(serde_json::json!({
+            "log_dir": log_dir,
+            "max_record_size": max_record_size,
+        }))
+        .unwrap();
+        let (_tx, receiver) = bounded(1);
+        LogThreadState {
+            params,
+            receiver,
+            template_engine: TemplateEngine::new(),
+            file_map: HashMap::new(),
+            oversize_dropped: 0,
+            last_oversize_warning: None,
+        }
+    }
+
+    fn record(recipient: &str) -> JsonLogRecord {
+        JsonLogRecord {
+            kind: RecordType::Reception,
+            id: "ID".to_string(),
+            sender: "sender@example.com".to_string(),
+            recipient: vec![recipient.to_string()],
+            queue: "example.com".to_string(),
+            site: "site".to_string(),
+            size: 0,
+            response: Response {
+                code: 250,
+                command: None,
+                content: "ok".to_string(),
+                enhanced_code: None,
+            },
+            peer_address: None,
+            timestamp: Utc::now(),
+            created: Utc::now(),
+            num_attempts: 0,
+            bounce_classification: Default::default(),
+            egress_pool: None,
+            egress_source: None,
+            source_address: None,
+            feedback_report: None,
+            meta: Default::default(),
+            headers: Default::default(),
+            delivery_protocol: None,
+            reception_protocol: None,
+            nodeid: uuid::Uuid::nil(),
+            tls_cipher: None,
+            tls_protocol_version: None,
+            tls_peer_subject_name: None,
+            provider_name: None,
+            session_id: None,
+        }
+    }
+
+    fn segment_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map(|rd| rd.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn oversized_record_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        // A recipient long enough that the serialized record exceeds the cap.
+        let mut state = state(dir.path().to_path_buf(), 256);
+        state
+            .do_record(record(&format!("{}@example.com", "x".repeat(512))))
+            .unwrap();
+
+        // Dropped without opening a segment. The first drop logs a warning and
+        // sets last_oversize_warning, which we assert on since oversize_dropped
+        // is reset back to 0 by that same warning.
+        assert!(state.last_oversize_warning.is_some());
+        k9::assert_equal!(state.file_map.len(), 0);
+        k9::assert_equal!(segment_count(dir.path()), 0);
+    }
+
+    #[test]
+    fn within_limit_record_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path().to_path_buf(), 4096);
+        state.do_record(record("recip@example.com")).unwrap();
+
+        assert!(state.last_oversize_warning.is_none());
+        k9::assert_equal!(state.file_map.len(), 1);
+        k9::assert_equal!(segment_count(dir.path()), 1);
+    }
+}

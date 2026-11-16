@@ -1,0 +1,318 @@
+local mod = {}
+local kumo = require 'kumo'
+local utils = require 'policy-extras.policy_utils'
+local typing = require 'policy-extras.typing'
+local Map, Option, Record, String =
+  typing.map, typing.option, typing.record, typing.string
+
+local PoolSourceEntry = Record('PoolSourceEntry', {
+  weight = Option(typing.number),
+})
+
+local PoolConfig = Map(String, PoolSourceEntry)
+
+local CACHED_EGRESS_SOURCE_OPTION_NAMES = nil
+
+local function is_egress_source_option_name(name)
+  if not CACHED_EGRESS_SOURCE_OPTION_NAMES then
+    CACHED_EGRESS_SOURCE_OPTION_NAMES = {}
+    for _, field in ipairs(kumo.egress_source_field_names()) do
+      CACHED_EGRESS_SOURCE_OPTION_NAMES[field] = true
+    end
+  end
+  return CACHED_EGRESS_SOURCE_OPTION_NAMES[name] == true
+end
+
+--- Checks whether `name` is a valid `kumo.make_egress_source` option and,
+--- if so, whether `value` is an acceptable value for it.
+--- Returns `is_option, err`: `is_option` is true when `name` is a known
+--- option and `value` is valid for it. `err` is non-nil only when `name`
+--- is a known option but `value` is invalid.
+local function is_egress_source_option(name, value)
+  if not is_egress_source_option_name(name) then
+    return false, nil
+  end
+  local p = { [name] = value }
+  if name ~= 'name' then
+    -- Ensure that we have the required name field
+    p.name = 'dummy'
+  end
+  local status, err = pcall(kumo.make_egress_source, p)
+  if not status then
+    return false, typing.extract_deserialize_error(err)
+  end
+  return true
+end
+
+local SourceConfig = Record('SourceConfig', {
+  _dynamic = is_egress_source_option,
+})
+
+local SourcesHelperConfig = Record('SourcesHelperConfig', {
+  pool = Option(Map(String, PoolConfig)),
+  source = Option(Map(String, SourceConfig)),
+})
+
+local function merge_file_data(data, target)
+  local data = SourcesHelperConfig(data)
+  -- print(kumo.serde.json_encode_pretty(data))
+
+  for source, params in pairs(data.source or {}) do
+    target.sources[source] = target.sources[source]
+      or {
+        name = source,
+      }
+    utils.merge_into(params, target.sources[source])
+  end
+
+  for pool, pool_def in pairs(data.pool or {}) do
+    target.pools[pool] = target.pools[pool]
+      or {
+        name = pool,
+        entries = {},
+      }
+
+    for pool_source, params in pairs(pool_def) do
+      local entry = {}
+      utils.merge_into(params, entry)
+      entry.name = pool_source
+      table.insert(target.pools[pool].entries, entry)
+    end
+  end
+end
+
+local function load_data(data_files)
+  local target = {
+    sources = {},
+    pools = {},
+  }
+
+  -- Each await point in this populate is a place where a busy runtime can delay
+  -- resuming it, and a long enough delay makes other callers waiting on the
+  -- cache time out. Loading all of the files in one call keeps that risk to one
+  -- await instead of one per file.
+  local loaded = utils.load_json_or_toml_files(data_files)
+  for _, data in ipairs(loaded) do
+    merge_file_data(data, target)
+  end
+
+  -- print(kumo.json_encode_pretty(target))
+
+  return target
+end
+
+--[[
+Usage:
+
+Create a `/opt/kumomta/etc/sources.toml` file with
+contents like:
+
+```toml
+[source."ip-1"]
+source_address = "10.0.0.1"
+
+[source."ip-2"]
+source_address = "10.0.0.2"
+
+[source."ip-3"]
+source_address = "10.0.0.3"
+
+# Pool containing just ip-1, which has weight=1
+[pool."BestReputation"]
+[pool."BestReputation"."ip-1"]
+
+# Pool with multiple ips
+[pool."MediumReputation"]
+
+[pool."MediumReputation"."ip-2"]
+weight = 2
+
+# We're warming up ip-3, so use it less frequently than ip-2
+[pool."MediumReputation"."ip-3"]
+weight = 1
+```
+
+Then in your policy:
+
+```
+local sources = require 'policy-extras.sources'
+
+sources:setup({'/opt/kumomta/etc/sources.toml'})
+```
+
+setup accepts an optional second table of options that tune the cache
+holding the parsed source and pool data:
+
+```
+sources:setup({'/opt/kumomta/etc/sources.toml'}, {
+  -- How long the parsed data is cached before the files are read again.
+  -- Defaults to '5 minutes'.
+  cache_ttl = '5 minutes',
+
+  -- Bound how long a lookup waits for the data to be (re)loaded before it
+  -- gives up. Unset by default, which uses the built-in lruttl deadline.
+  sources_data_populate_timeout = '5s',
+
+  -- When the cached data has expired and a reload is in flight, serve the
+  -- previous data to lookups rather than making them wait for the reload.
+  -- Defaults to false. This only takes effect once a lookup has waited
+  -- sources_data_populate_timeout, so set that to a small value alongside
+  -- it. Enabling this also means edits to the source files are not picked
+  -- up on a config reload; they apply only once cache_ttl expires.
+  allow_stale_sources_data = false,
+
+  -- Retry the load once more if it hits sources_data_populate_timeout.
+  -- Defaults to false.
+  retry_sources_data_fetch_on_populate_timeout = false,
+})
+```
+]]
+
+function mod:setup(data_files, options)
+  if mod.CONFIGURED then
+    error 'sources module has already been configured'
+  end
+
+  options = options or {}
+
+  local cached_load_data = kumo.memoize(load_data, {
+    name = 'sources_data',
+    ttl = options.cache_ttl or '5 minutes',
+    capacity = 10,
+    invalidate_with_epoch = true,
+    retry_on_populate_timeout = options.retry_sources_data_fetch_on_populate_timeout,
+    populate_timeout = options.sources_data_populate_timeout,
+    allow_stale_reads = options.allow_stale_sources_data or false,
+  })
+
+  mod.CONFIGURED = {
+    data_files = data_files,
+    get_data = function()
+      return cached_load_data(data_files)
+    end,
+  }
+
+  kumo.on('get_egress_source', function(source_name)
+    local data = cached_load_data(data_files)
+    local params = data.sources[source_name]
+    --[[
+    print(
+      string.format('source %s: %s', source_name, kumo.json_encode(params))
+    )
+    ]]
+    return kumo.make_egress_source(params)
+  end)
+
+  kumo.on('get_egress_pool', function(pool_name)
+    local data = cached_load_data(data_files)
+    local params = data.pools[pool_name]
+    -- print(string.format('pool %s: %s', pool_name, kumo.json_encode(params)))
+    return kumo.make_egress_pool(params)
+  end)
+end
+
+kumo.on('validate_config', function()
+  if not mod.CONFIGURED then
+    return
+  end
+
+  local data = mod.CONFIGURED.get_data()
+  local failed = false
+
+  function show_context()
+    if failed then
+      return
+    end
+    failed = true
+    print 'Issues found in the combined set of sources files:'
+    for _, file_name in ipairs(mod.CONFIGURED.data_files) do
+      if type(file_name) == 'table' then
+        print ' - (inline table)'
+      else
+        print(string.format(' - %s', file_name))
+      end
+    end
+  end
+
+  for source, params in pairs(data.sources) do
+    local status, err = pcall(kumo.make_egress_source, params)
+    if not status then
+      show_context()
+      print(err)
+      kumo.validation_failed()
+    end
+  end
+  for pool, params in pairs(data.pools) do
+    local status, err = pcall(kumo.make_egress_pool, params)
+    if not status then
+      show_context()
+      print(err)
+      kumo.validation_failed()
+    end
+
+    for _, entry in ipairs(params.entries) do
+      if not data.sources[entry.name] then
+        show_context()
+        print(
+          string.format(
+            "pool '%s' references source '%s' which is not defined",
+            pool,
+            entry.name
+          )
+        )
+      end
+    end
+  end
+end)
+
+function mod:test()
+  local data = kumo.serde.toml_parse [[
+[source."ip-1"]
+source_address = "10.0.0.1"
+
+[source."ip-2"]
+source_address = "10.0.0.2"
+
+[source."ip-3"]
+source_address = "10.0.0.3"
+
+# This pool has nothing in it
+[pool."AlwaysSuspended"]
+
+# Pool containing just ip-1, which has weight=1
+[pool."BestReputation"]
+[pool."BestReputation"."ip-1"]
+
+# Pool with multiple ips
+[pool."MediumReputation"]
+
+[pool."MediumReputation"."ip-2"]
+weight = 2
+
+# We're warming up ip-3, so use it less frequently than ip-2
+[pool."MediumReputation"."ip-3"]
+weight = 1
+  ]]
+  local parsed = load_data { data }
+
+  -- Verify that an empty pool still shows up in the data
+  assert(parsed.pools.AlwaysSuspended)
+
+  utils.assert_eq(is_egress_source_option('source_address', '10.0.0.1'), true)
+  local is_option, err = is_egress_source_option('not_an_option', 1)
+  utils.assert_eq(is_option, false)
+  utils.assert_eq(err, nil)
+
+  local status, data_or_error = pcall(load_data, {
+    kumo.serde.toml_parse [[
+[source."ip"]
+socks5_proxy_server = "not a valid hostname:5000"
+[pool."a"]
+[pool."a"."ip"]
+  ]],
+  })
+  assert(not status)
+  assert(data_or_error:find 'invalid hostname')
+end
+
+return mod

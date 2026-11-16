@@ -1,0 +1,21 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+# Create a user and group to run as.
+# Note that we don't use the docker USER here because we need to
+# start as root and then drop to this user. That is handled by
+# the docker-runner.sh script.
+#RUN groupadd --system --gid 1000 kumod && useradd --system --gid kumod --uid 1000 kumod
+COPY kumo*.deb /tmp/kumomta.deb
+COPY docker/kumod/docker-runner.sh /opt/kumomta/sbin/docker-runner.sh
+RUN apt update && apt install -y /tmp/kumo*.deb ca-certificates && rm -rf /var/lib/apt/lists/* /tmp/*.deb
+EXPOSE 25/tcp
+EXPOSE 587/tcp
+EXPOSE 465/tcp
+EXPOSE 2525/tcp
+EXPOSE 2026/tcp
+LABEL org.opencontainers.image.source=https://github.com/KumoCorp/kumomta
+LABEL org.opencontainers.image.description="The KumoMTA Container Image"
+LABEL org.opencontainers.image.licenses="Apache"
+ENV PATH="/opt/kumomta/sbin:$PATH"
+CMD ["/opt/kumomta/sbin/docker-runner.sh"]
+

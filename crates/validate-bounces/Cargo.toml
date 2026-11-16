@@ -1,0 +1,12 @@
+[package]
+name = "validate-bounces"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+clap = {workspace=true}
+bounce-classify = {path="../bounce-classify"}
+
+[lints]
+workspace = true

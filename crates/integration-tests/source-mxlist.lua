@@ -1,0 +1,110 @@
+local kumo = require 'kumo'
+package.path = '../../assets/?.lua;' .. package.path
+
+log_hooks = require 'policy-extras.log_hooks'
+
+local TEST_DIR = os.getenv 'KUMOD_TEST_DIR'
+local SINK_PORT = tonumber(os.getenv 'KUMOD_SMTP_SINK_PORT')
+
+kumo.on('init', function()
+  local timeout_server = os.getenv 'KUMOD_TEST_DNS_TIMEOUT_SERVER'
+  if timeout_server then
+    -- Send all DNS queries to a loopback UDP socket that the test keeps open
+    -- but never answers.
+    kumo.dns.configure_resolver {
+      name_servers = { { socket_addr = timeout_server, protocol = 'udp' } },
+      options = {
+        -- One attempt returns an error after 100ms rather than retrying for the
+        -- default retry period.
+        timeout = '100ms',
+        attempts = 1,
+        cache_size = 0,
+        use_hosts_file = 'Never',
+      },
+    }
+    local ok = pcall(kumo.dns.lookup_addr, 'unavailable.example.test')
+    assert(not ok, 'the timeout fixture must produce an address lookup error')
+  end
+
+  kumo.configure_accounting_db_path(TEST_DIR .. '/accounting.db')
+  kumo.aaa.configure_acct_log {
+    log_dir = TEST_DIR .. '/acct',
+    max_segment_duration = '1s',
+  }
+
+  local relay_hosts = { '0.0.0.0/0' }
+
+  kumo.start_esmtp_listener {
+    listen = '127.0.0.1:0',
+    relay_hosts = relay_hosts,
+  }
+
+  kumo.start_http_listener {
+    listen = '127.0.0.1:0',
+  }
+
+  kumo.configure_local_logs {
+    log_dir = TEST_DIR .. '/logs',
+    max_segment_duration = '1s',
+  }
+
+  kumo.define_spool {
+    kind = 'RocksDB',
+    name = 'data',
+    path = TEST_DIR .. '/data-spool',
+  }
+
+  kumo.define_spool {
+    kind = 'RocksDB',
+    name = 'meta',
+    path = TEST_DIR .. '/meta-spool',
+  }
+end)
+
+kumo.on('get_listener_domain', function(domain, listener, conn_meta)
+  return kumo.make_listener_domain {
+    relay_to = true,
+    log_oob = true,
+    log_arf = true,
+  }
+end)
+
+kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  kumo.log_warn('get_queue_config', domain, tenant, campaign, routing_domain)
+
+  local sink = 'localhost:' .. SINK_PORT
+
+  local host_map = kumo.serde.json_load(TEST_DIR .. '/queue-data.json')
+  local mx = host_map[domain] or { sink }
+
+  local protocol = {
+    -- Redirect traffic to the sink
+    smtp = {
+      mx_list = mx,
+    },
+  }
+
+  return kumo.make_queue_config {
+    protocol = protocol,
+    refresh_strategy = 'Epoch',
+  }
+end)
+
+kumo.on('get_egress_path_config', function(domain, source_name, _site_name)
+  -- Allow sending to a sink
+  local params = {
+    enable_tls = 'OpportunisticInsecure',
+    prohibited_hosts = {},
+    -- Skip IPv6 addresses that come back for eg: localhost.
+    -- For the most part the integration tests don't care about this,
+    -- but the disconnect_XXX tests do make some assertions on the
+    -- ordering, and in particular, disconnect_terminate_ok will be
+    -- unhappy if the second address in its MX plan is unroutable IPv6.
+    skip_hosts = { '::/0' },
+    idle_timeout = '100ms',
+  }
+
+  kumo.log_warn('get_egress_path_config *******************', domain)
+
+  return kumo.make_egress_path(params)
+end)

@@ -1,0 +1,97 @@
+[package]
+name = "kumod"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+arc-swap = {workspace=true}
+async-trait = {workspace=true}
+axum = {workspace=true, features=["ws"]}
+axum-client-ip = {workspace=true}
+axum-server = {workspace=true, features=["tls-rustls"]}
+bounce-classify = {path="../bounce-classify"}
+bstr.workspace = true
+camino = {workspace=true}
+chrono = {workspace=true, default-features=false, features=["serde"]}
+cidr-map = {path="../cidr-map"}
+clap = {workspace=true, features=["derive"]}
+crossbeam-skiplist = {workspace=true}
+config = {path="../config"}
+dashmap.workspace = true
+data-encoding = {workspace=true}
+data-loader = {path="../data-loader"}
+derive-where.workspace = true
+dns-resolver = {path="../dns-resolver", features=["unbound"]}
+mailexchanger = {path="../mailexchanger"}
+duration-serde = {path="../duration-serde"}
+flate2 = {workspace=true}
+flume = {workspace=true}
+gcd = {workspace=true}
+gethostname = {workspace=true}
+humansize = {workspace=true}
+humantime.workspace = true
+kumo-address = {path="../kumo-address"}
+kumo-api-types = {path="../kumo-api-types"}
+kumo-chrono-helper = {path="../kumo-chrono-helper"}
+kumo-dmarc = {path="../kumo-dmarc"}
+kumo-jsonl = {path="../kumo-jsonl"}
+kumo-log-types = {path="../kumo-log-types"}
+kumo-counter-series = {path="../kumo-counter-series"}
+kumo-prometheus = {path="../kumo-prometheus"}
+kumo-server-common = {path="../kumo-server-common"}
+kumo-server-lifecycle = {path="../kumo-server-lifecycle"}
+kumo-server-memory = {path="../kumo-server-memory"}
+kumo-http-client = {path="../kumo-http-client"}
+kumo-server-runtime = {path="../kumo-server-runtime"}
+kumo-spf = {path="../kumo-spf"}
+kumo-template = {path="../kumo-template"}
+kumo-wrap = {path="../kumo-wrap"}
+linkme.workspace = true
+lru-cache = {workspace=true}
+lruttl = {path="../lruttl"}
+maildir = {path="../maildir"}
+mailparsing = {path="../mailparsing"}
+memchr = {workspace=true}
+message = {path="../message"}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"]}
+mod-dns-resolver = {path="../mod-dns-resolver"}
+mod-serde = {path="../mod-serde"}
+mod-time = {path="../mod-time"}
+nix = {workspace=true, features=["resource", "user"]}
+num-format.workspace = true
+openssl.workspace = true
+parking_lot = {workspace=true}
+ppp = {workspace=true}
+rand = {workspace=true}
+reqwest = {workspace=true, default-features=false, features=["rustls-tls"]}
+rfc5321 = {path="../rfc5321"}
+rustls = {workspace=true}
+secrecy = {workspace=true}
+serde = {workspace=true, features=["rc"]}
+serde_json = {workspace=true}
+smallvec.workspace = true
+socksv5 = {workspace=true}
+spool = {path="../spool", features=["rocksdb"]}
+sqlite = {workspace=true}
+thiserror = {workspace=true}
+throttle = {path="../throttle"}
+timeq = {path="../timeq"}
+tokio = {workspace=true, features=["full", "tracing"]}
+tokio-rustls = {workspace=true}
+tracing = {workspace=true}
+utoipa = {workspace=true}
+uuid = {workspace=true, features=["v4", "fast-rng"]}
+version-info = {path="../version-info"}
+zstd = {workspace=true}
+
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = {workspace=true}
+
+[dev-dependencies]
+k9 = {workspace=true}
+maplit = {workspace=true}
+tempfile = {workspace=true}
+
+[lints]
+workspace = true

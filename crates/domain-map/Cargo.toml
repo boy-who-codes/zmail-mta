@@ -1,0 +1,18 @@
+[package]
+name = "domain-map"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace=true}
+config = {path="../config"}
+mod-memoize = {path="../mod-memoize"}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"]}
+serde = {workspace=true}
+serde_json = {workspace=true}
+
+[dev-dependencies]
+k9 = {workspace=true}
+
+[lints]
+workspace = true

@@ -1,0 +1,2988 @@
+use crate::address::HeaderAddressList;
+#[cfg(feature = "impl")]
+use crate::dkim::Signer;
+#[cfg(feature = "impl")]
+use crate::dkim::SIGN_POOL;
+pub use crate::queue_name::QueueNameComponents;
+use crate::scheduling::Scheduling;
+use anyhow::Context;
+use bstr::{BString, ByteSlice, ByteVec};
+use chrono::{DateTime, Utc};
+#[cfg(feature = "impl")]
+use config::{any_err, from_lua_value, serialize_options, SerdeWrappedValue};
+use futures::{FutureExt, TryFutureExt};
+use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListAtomicLink};
+use kumo_chrono_helper::*;
+#[cfg(feature = "impl")]
+use kumo_dkim::arc::ARC;
+use kumo_log_types::rfc3464::Report;
+use kumo_log_types::rfc5965::ARFReport;
+use kumo_prometheus::declare_metric;
+#[cfg(feature = "impl")]
+use mailparsing::{AuthenticationResult, AuthenticationResults, EncodeHeaderValue};
+use mailparsing::{
+    CheckFixSettings, DecodedBody, Header, HeaderParseResult, MessageConformance, MimePart,
+};
+#[cfg(feature = "impl")]
+use mlua::{IntoLua, LuaSerdeExt, UserData, UserDataMethods};
+#[cfg(feature = "impl")]
+use mod_dns_resolver::get_resolver_instance;
+use parking_lot::Mutex;
+use rfc5321::parser::EnvelopeAddress;
+use serde::{Deserialize, Serialize};
+use serde_with::formats::PreferOne;
+use serde_with::{serde_as, OneOrMany};
+use spool::{get_data_spool, get_meta_spool, Spool, SpoolId};
+use std::collections::{BTreeMap, HashSet};
+use std::hash::Hash;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, LazyLock, Weak};
+use std::time::{Duration, Instant};
+use timeq::TimerEntryWithDelay;
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct MessageFlags: u8 {
+        /// true if Metadata needs to be saved
+        const META_DIRTY = 1;
+        /// true if Data needs to be saved
+        const DATA_DIRTY = 2;
+        /// true if scheduling restrictions are present in the metadata
+        const SCHEDULED = 4;
+        /// true if high durability writes should always be used
+        const FORCE_SYNC = 8;
+    }
+}
+
+declare_metric! {
+/// Total number of Message objects.
+///
+/// This encompasses all Message objects in various states, whether
+/// they are in a queue, moving between queues, being built as part
+/// of an injection, pending logging, message metadata and/or data
+/// may be either resident or offloaded to spool.
+static MESSAGE_COUNT: IntGauge("message_count");
+}
+
+declare_metric! {
+/// Total number of Message objects with metadata loaded.
+///
+/// Tracks how many messages have their `meta` data resident
+/// in memory.  This may be because they have not yet saved
+/// it, or because the message is being processed and the
+/// metadata is required for that processing.
+static META_COUNT: IntGauge("message_meta_resident_count");
+}
+
+declare_metric! {
+/// Total number of Message objects with body data loaded.
+///
+/// Tracks how many messages have their `data` resident
+/// in memory.  This may be because they have not yet saved
+/// it, or because the message is being processed and the
+/// data is either required to be in memory in order to
+/// deliver the message, or because logging or other
+/// post-injection policy is configured to operate on
+/// the message.
+static DATA_COUNT: IntGauge("message_data_resident_count");
+}
+
+static NO_DATA: LazyLock<Arc<Box<[u8]>>> = LazyLock::new(|| Arc::new(vec![].into_boxed_slice()));
+
+declare_metric! {
+/// How many seconds it takes to save a message to spool.
+///
+/// This metric encompasses the elapsed time to saved
+/// either or both the `meta` and `data` portions of a
+/// message to spool.
+///
+/// High values indicate IO pressure which may be
+/// alleviated by tuning other constraints and/or
+/// [RocksDB Parameters](../../kumo/define_spool/rocks_params.md)
+static SAVE_HIST: Histogram("message_save_latency");
+}
+
+declare_metric! {
+/// How many seconds it takes to load message data from spool.
+///
+/// High values indicate IO pressure which may be caused
+/// by policy that operates on the message body post-reception.
+/// We recommend *avoiding* logging header values as that is
+/// the most common cause of this metric spiking and has
+/// the biggest impact in resolving it.
+///
+/// IO pressure may also be alleviated by tuning other constraints and/or
+/// [RocksDB Parameters](../../kumo/define_spool/rocks_params.md)
+static LOAD_DATA_HIST: Histogram("message_data_load_latency");
+}
+
+declare_metric! {
+/// How long it takes to load message metadata from spool
+///
+/// High values indicate IO pressure which may be
+/// alleviated by tuning other constraints and/or
+/// [RocksDB Parameters](../../kumo/define_spool/rocks_params.md)
+static LOAD_META_HIST: Histogram("message_meta_load_latency");
+}
+
+/// Keeps MESSAGE_COUNT incremented for the lifetime of a `MessageInner`.
+///
+/// Binding the count to construction and `Drop` makes it impossible to
+/// create or destroy a message without the gauge tracking it. The guard is
+/// zero-sized and costs no storage.
+#[derive(Debug)]
+struct MessageGuard;
+
+impl MessageGuard {
+    fn new() -> Self {
+        MESSAGE_COUNT.inc();
+        Self
+    }
+}
+
+impl Drop for MessageGuard {
+    fn drop(&mut self) {
+        MESSAGE_COUNT.dec();
+    }
+}
+
+/// Keeps META_COUNT incremented while resident metadata is held. See
+/// [`MessageGuard`] for the zero-sized guard pattern.
+#[derive(Debug)]
+struct MetaGuard;
+
+impl MetaGuard {
+    fn new() -> Self {
+        META_COUNT.inc();
+        Self
+    }
+}
+
+impl Drop for MetaGuard {
+    fn drop(&mut self) {
+        META_COUNT.dec();
+    }
+}
+
+/// Keeps DATA_COUNT incremented while resident body data is held. See
+/// [`MessageGuard`] for the zero-sized guard pattern.
+#[derive(Debug)]
+struct DataGuard;
+
+impl DataGuard {
+    fn new() -> Self {
+        DATA_COUNT.inc();
+        Self
+    }
+}
+
+impl Drop for DataGuard {
+    fn drop(&mut self) {
+        DATA_COUNT.dec();
+    }
+}
+
+/// Message metadata resident in memory. Holding one keeps META_COUNT
+/// incremented. Dropping it releases the count.
+#[derive(Debug)]
+struct ResidentMeta {
+    value: Box<MetaData>,
+    _guard: MetaGuard,
+}
+
+impl ResidentMeta {
+    fn new(value: Box<MetaData>) -> Self {
+        Self {
+            value,
+            _guard: MetaGuard::new(),
+        }
+    }
+}
+
+impl Deref for ResidentMeta {
+    type Target = MetaData;
+    fn deref(&self) -> &MetaData {
+        &self.value
+    }
+}
+
+impl DerefMut for ResidentMeta {
+    fn deref_mut(&mut self) -> &mut MetaData {
+        &mut self.value
+    }
+}
+
+/// Message body data resident in memory, counted in DATA_COUNT while held. A
+/// resident body is always non-empty. An empty body is the absence of a
+/// `ResidentData` (`None`).
+#[derive(Debug)]
+struct ResidentData {
+    value: Arc<Box<[u8]>>,
+    _guard: DataGuard,
+}
+
+impl ResidentData {
+    fn new(value: Arc<Box<[u8]>>) -> Self {
+        Self {
+            value,
+            _guard: DataGuard::new(),
+        }
+    }
+
+    /// Wraps `value` as a resident body, or yields `None` when it is empty.
+    fn maybe(value: Arc<Box<[u8]>>) -> Option<Self> {
+        if value.is_empty() {
+            None
+        } else {
+            Some(Self::new(value))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MessageInner {
+    metadata: Option<ResidentMeta>,
+    data: Option<ResidentData>,
+    flags: MessageFlags,
+    num_attempts: u16,
+    due: Option<DateTime<Utc>>,
+    _live: MessageGuard,
+}
+
+impl MessageInner {
+    /// Returns the resident body, or the shared empty buffer when the body is
+    /// not resident. The returned `Arc` is a handle to the bytes and does not
+    /// affect DATA_COUNT.
+    fn data_arc(&self) -> Arc<Box<[u8]>> {
+        match &self.data {
+            Some(resident) => resident.value.clone(),
+            None => NO_DATA.clone(),
+        }
+    }
+
+    /// Installs `data` as the resident body, or clears it when `data` is empty.
+    fn set_data(&mut self, data: Arc<Box<[u8]>>) {
+        if data.is_empty() {
+            self.data = None;
+        } else if let Some(resident) = &mut self.data {
+            // Reuse the existing DATA_COUNT guard instead of dropping and
+            // recreating it. A resident-to-resident update never touches the
+            // gauge.
+            resident.value = data;
+        } else {
+            self.data = Some(ResidentData::new(data));
+        }
+    }
+
+    /// Installs `metadata` as the resident metadata.
+    fn set_metadata(&mut self, metadata: Box<MetaData>) {
+        if let Some(resident) = &mut self.metadata {
+            // Reuse the existing META_COUNT guard instead of dropping and
+            // recreating it. A resident-to-resident update never touches the
+            // gauge.
+            resident.value = metadata;
+        } else {
+            self.metadata = Some(ResidentMeta::new(metadata));
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct MessageWithId {
+    id: SpoolId,
+    inner: Mutex<MessageInner>,
+    link: LinkedListAtomicLink,
+}
+
+intrusive_adapter!(
+    pub(crate) MessageWithIdAdapter = Arc<MessageWithId>: MessageWithId { link: LinkedListAtomicLink }
+);
+
+/// A list of messages with an O(1) list overhead; no additional
+/// memory per-message is required to track this list.
+/// However, a given Message can only belong to one instance
+/// of such a list at a time.
+pub struct MessageList {
+    list: LinkedList<MessageWithIdAdapter>,
+    len: usize,
+}
+
+impl Default for MessageList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MessageList {
+    /// Create a new MessageList
+    pub fn new() -> Self {
+        Self {
+            list: LinkedList::new(MessageWithIdAdapter::default()),
+            len: 0,
+        }
+    }
+
+    /// Returns the number of elements contained in the list
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Take all of the elements from this list and return them
+    /// in a new separate instance of MessageList.
+    pub fn take(&mut self) -> Self {
+        let new_list = Self {
+            list: self.list.take(),
+            len: self.len,
+        };
+        self.len = 0;
+        new_list
+    }
+
+    /// Push a message to the back of the list
+    pub fn push_back(&mut self, message: Message) {
+        self.list.push_back(message.msg_and_id);
+        self.len += 1;
+    }
+
+    /// Pop a message from the front of the list
+    pub fn pop_front(&mut self) -> Option<Message> {
+        self.list.pop_front().map(|msg_and_id| {
+            self.len -= 1;
+            Message { msg_and_id }
+        })
+    }
+
+    /// Pop a message from the back of the list
+    pub fn pop_back(&mut self) -> Option<Message> {
+        self.list.pop_back().map(|msg_and_id| {
+            self.len -= 1;
+            Message { msg_and_id }
+        })
+    }
+
+    /// Pop all of the messages from this list into a vector
+    /// of messages.
+    /// Memory usage is O(number-of-messages).
+    pub fn drain(&mut self) -> Vec<Message> {
+        let mut messages = Vec::with_capacity(self.len);
+        while let Some(msg) = self.pop_front() {
+            messages.push(msg);
+        }
+        messages
+    }
+
+    pub fn extend_from_iter<I>(&mut self, iter: I)
+    where
+        I: Iterator<Item = Message>,
+    {
+        for msg in iter {
+            self.push_back(msg)
+        }
+    }
+}
+
+impl IntoIterator for MessageList {
+    type Item = Message;
+    type IntoIter = MessageListIter;
+    fn into_iter(self) -> MessageListIter {
+        MessageListIter { list: self.list }
+    }
+}
+
+pub struct MessageListIter {
+    list: LinkedList<MessageWithIdAdapter>,
+}
+
+impl Iterator for MessageListIter {
+    type Item = Message;
+    fn next(&mut self) -> Option<Message> {
+        self.list
+            .pop_front()
+            .map(|msg_and_id| Message { msg_and_id })
+    }
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "impl", derive(mlua::FromLua))]
+pub struct Message {
+    pub(crate) msg_and_id: Arc<MessageWithId>,
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
+}
+impl Eq for Message {}
+
+impl Hash for Message {
+    fn hash<H>(&self, hasher: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        self.id().hash(hasher)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WeakMessage {
+    weak: Weak<MessageWithId>,
+}
+
+impl WeakMessage {
+    pub fn upgrade(&self) -> Option<Message> {
+        Some(Message {
+            msg_and_id: self.weak.upgrade()?,
+        })
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct MetaData {
+    pub sender: EnvelopeAddress,
+    #[serde_as(as = "OneOrMany<_, PreferOne>")]
+    pub recipient: Vec<EnvelopeAddress>,
+    pub meta: serde_json::Value,
+    #[serde(default)]
+    pub schedule: Option<Scheduling>,
+}
+
+impl Message {
+    /// Create a new message with the supplied data.
+    /// The message meta and data are marked as dirty
+    pub fn new_dirty(
+        id: SpoolId,
+        sender: EnvelopeAddress,
+        recipient: Vec<EnvelopeAddress>,
+        meta: serde_json::Value,
+        data: Arc<Box<[u8]>>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(meta.is_object(), "metadata must be a json object");
+        Ok(Self {
+            msg_and_id: Arc::new(MessageWithId {
+                id,
+                inner: Mutex::new(MessageInner {
+                    metadata: Some(ResidentMeta::new(Box::new(MetaData {
+                        sender,
+                        recipient,
+                        meta,
+                        schedule: None,
+                    }))),
+                    data: ResidentData::maybe(data),
+                    flags: MessageFlags::META_DIRTY | MessageFlags::DATA_DIRTY,
+                    num_attempts: 0,
+                    due: None,
+                    _live: MessageGuard::new(),
+                }),
+                link: LinkedListAtomicLink::default(),
+            }),
+        })
+    }
+
+    pub fn weak(&self) -> WeakMessage {
+        WeakMessage {
+            weak: Arc::downgrade(&self.msg_and_id),
+        }
+    }
+
+    /// Helper for creating a message based on spool enumeration.
+    /// Given a spool id and the serialized metadata blob, returns
+    /// a message holding the deserialized version of that metadata.
+    pub fn new_from_spool(id: SpoolId, metadata: Vec<u8>) -> anyhow::Result<Self> {
+        let metadata: MetaData = serde_json::from_slice(&metadata)?;
+
+        let flags = if metadata.schedule.is_some() {
+            MessageFlags::SCHEDULED
+        } else {
+            MessageFlags::empty()
+        };
+
+        Ok(Self {
+            msg_and_id: Arc::new(MessageWithId {
+                id,
+                inner: Mutex::new(MessageInner {
+                    metadata: Some(ResidentMeta::new(Box::new(metadata))),
+                    data: None,
+                    flags,
+                    num_attempts: 0,
+                    due: None,
+                    _live: MessageGuard::new(),
+                }),
+                link: LinkedListAtomicLink::default(),
+            }),
+        })
+    }
+
+    pub(crate) fn new_from_parts(id: SpoolId, metadata: MetaData, data: Arc<Box<[u8]>>) -> Self {
+        let flags = if metadata.schedule.is_some() {
+            MessageFlags::SCHEDULED
+        } else {
+            MessageFlags::empty()
+        };
+
+        Self {
+            msg_and_id: Arc::new(MessageWithId {
+                id,
+                inner: Mutex::new(MessageInner {
+                    metadata: Some(ResidentMeta::new(Box::new(metadata))),
+                    data: ResidentData::maybe(data),
+                    flags: flags | MessageFlags::META_DIRTY | MessageFlags::DATA_DIRTY,
+                    num_attempts: 0,
+                    due: None,
+                    _live: MessageGuard::new(),
+                }),
+                link: LinkedListAtomicLink::default(),
+            }),
+        }
+    }
+
+    pub async fn new_with_id(id: SpoolId) -> anyhow::Result<Self> {
+        let meta_spool = get_meta_spool();
+        let data = meta_spool.load(id).await?;
+        Self::new_from_spool(id, data)
+    }
+
+    pub fn get_num_attempts(&self) -> u16 {
+        let inner = self.msg_and_id.inner.lock();
+        inner.num_attempts
+    }
+
+    pub fn set_num_attempts(&self, num_attempts: u16) {
+        let mut inner = self.msg_and_id.inner.lock();
+        inner.num_attempts = num_attempts;
+    }
+
+    pub fn increment_num_attempts(&self) {
+        let mut inner = self.msg_and_id.inner.lock();
+        inner.num_attempts += 1;
+    }
+
+    pub async fn set_scheduling(
+        &self,
+        scheduling: Option<Scheduling>,
+    ) -> anyhow::Result<Option<Scheduling>> {
+        self.load_meta_if_needed().await?;
+        let mut inner = self.msg_and_id.inner.lock();
+        match &mut inner.metadata {
+            None => anyhow::bail!("set_scheduling: metadata must be loaded first"),
+            Some(meta) => {
+                meta.schedule = scheduling;
+                inner.flags.set(MessageFlags::META_DIRTY, true);
+                inner
+                    .flags
+                    .set(MessageFlags::SCHEDULED, scheduling.is_some());
+                if let Some(sched) = scheduling {
+                    let due = inner.due.unwrap_or_else(Utc::now);
+                    inner.due = Some(sched.adjust_for_schedule(due));
+                }
+                Ok(scheduling)
+            }
+        }
+    }
+
+    pub async fn get_scheduling(&self) -> anyhow::Result<Option<Scheduling>> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        Ok(inner.metadata.as_ref().and_then(|meta| meta.schedule))
+    }
+
+    pub fn get_due(&self) -> Option<DateTime<Utc>> {
+        let inner = self.msg_and_id.inner.lock();
+        inner.due
+    }
+
+    pub async fn delay_with_jitter(&self, limit: i64) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let scale = rand::random::<f32>();
+        let value = (scale * limit as f32) as i64;
+        self.delay_by(seconds(value)?).await
+    }
+
+    pub async fn delay_by(
+        &self,
+        duration: chrono::Duration,
+    ) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let due = Utc::now()
+            .checked_add_signed(duration)
+            .ok_or_else(|| anyhow::anyhow!("due time out of range: now + {duration}"))?;
+        self.set_due(Some(due)).await
+    }
+
+    /// Delay by requested duration, and add up to 1 minute of jitter
+    pub async fn delay_by_and_jitter(
+        &self,
+        duration: chrono::Duration,
+    ) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let scale = rand::random::<f32>();
+        let value = (scale * 60.) as i64;
+        let duration = duration
+            .checked_add(&seconds(value)?)
+            .ok_or_else(|| anyhow::anyhow!("due time out of range: duration + jitter"))?;
+        let due = Utc::now()
+            .checked_add_signed(duration)
+            .ok_or_else(|| anyhow::anyhow!("due time out of range: now + {duration}"))?;
+        self.set_due(Some(due)).await
+    }
+
+    pub async fn set_due(
+        &self,
+        due: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let due = {
+            let mut inner = self.msg_and_id.inner.lock();
+
+            if !inner.flags.contains(MessageFlags::SCHEDULED) {
+                // This is the simple, fast-path, common case
+                inner.due = due;
+                return Ok(inner.due);
+            }
+
+            let due = due.unwrap_or_else(Utc::now);
+
+            if let Some(meta) = &inner.metadata {
+                inner.due = match &meta.schedule {
+                    Some(sched) => Some(sched.adjust_for_schedule(due)),
+                    None => Some(due),
+                };
+                return Ok(inner.due);
+            }
+
+            // We'll need to load the metadata to correctly
+            // update the schedule for this message
+            due
+        };
+
+        self.load_meta().await?;
+
+        {
+            let mut inner = self.msg_and_id.inner.lock();
+            match &inner.metadata {
+                Some(meta) => {
+                    inner.due = match &meta.schedule {
+                        Some(sched) => Some(sched.adjust_for_schedule(due)),
+                        None => Some(due),
+                    };
+                    Ok(inner.due)
+                }
+                None => anyhow::bail!("loaded metadata, but metadata is not set!?"),
+            }
+        }
+    }
+
+    fn get_data_if_dirty(&self) -> Option<Arc<Box<[u8]>>> {
+        let inner = self.msg_and_id.inner.lock();
+        if inner.flags.contains(MessageFlags::DATA_DIRTY) {
+            Some(inner.data_arc())
+        } else {
+            None
+        }
+    }
+
+    fn get_meta_if_dirty(&self) -> Option<MetaData> {
+        let inner = self.msg_and_id.inner.lock();
+        if inner.flags.contains(MessageFlags::META_DIRTY) {
+            inner.metadata.as_ref().map(|md| (**md).clone())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) async fn clone_meta_data(&self) -> anyhow::Result<MetaData> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        inner
+            .metadata
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("metadata not loaded even though we just loaded it"))
+            .map(|md| (**md).clone())
+    }
+
+    pub fn set_force_sync(&self, force: bool) {
+        let mut inner = self.msg_and_id.inner.lock();
+        inner.flags.set(MessageFlags::FORCE_SYNC, force);
+    }
+
+    pub fn needs_save(&self) -> bool {
+        let inner = self.msg_and_id.inner.lock();
+        inner.flags.contains(MessageFlags::META_DIRTY)
+            || inner.flags.contains(MessageFlags::DATA_DIRTY)
+    }
+
+    pub async fn save(&self, deadline: Option<Instant>) -> anyhow::Result<()> {
+        let _timer = SAVE_HIST.start_timer();
+        self.save_to(&**get_meta_spool(), &**get_data_spool(), deadline)
+            .await
+    }
+
+    pub async fn save_to(
+        &self,
+        meta_spool: &(dyn Spool + Send + Sync),
+        data_spool: &(dyn Spool + Send + Sync),
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<()> {
+        let force_sync = self
+            .msg_and_id
+            .inner
+            .lock()
+            .flags
+            .contains(MessageFlags::FORCE_SYNC);
+
+        let data_fut: futures::future::BoxFuture<'_, anyhow::Result<bool>> =
+            if let Some(data) = self.get_data_if_dirty() {
+                anyhow::ensure!(!data.is_empty(), "message data must not be empty");
+                data_spool
+                    .store(self.msg_and_id.id, data, force_sync, deadline)
+                    .map_ok(|_| true)
+                    .boxed()
+            } else {
+                futures::future::ready(Ok(false)).boxed()
+            };
+        let meta_fut: futures::future::BoxFuture<'_, anyhow::Result<bool>> =
+            if let Some(meta) = self.get_meta_if_dirty() {
+                let meta = Arc::new(serde_json::to_vec(&meta)?.into_boxed_slice());
+                meta_spool
+                    .store(self.msg_and_id.id, meta, force_sync, deadline)
+                    .map_ok(|_| true)
+                    .boxed()
+            } else {
+                futures::future::ready(Ok(false)).boxed()
+            };
+
+        // NOTE: if we have a deadline, it is tempting to want to use
+        // timeout_at here to enforce it, but the underlying spool
+        // futures are not guaranteed to be fully cancel safe, which
+        // is why we pass the deadline down to the save method to allow
+        // them to handle timeouts internally.
+        let (data_res, meta_res) = tokio::join!(data_fut, meta_fut);
+
+        // Clear the dirty flag for each spool that successfully
+        // stored (Ok(true)).  Even when the other spool failed, we
+        // must still record the partial success: the caller may
+        // unwind by removing from both spools, and the remove on a
+        // spool that did not receive the data is harmless.
+        if matches!(data_res, Ok(true)) {
+            self.msg_and_id
+                .inner
+                .lock()
+                .flags
+                .remove(MessageFlags::DATA_DIRTY);
+        }
+        if matches!(meta_res, Ok(true)) {
+            self.msg_and_id
+                .inner
+                .lock()
+                .flags
+                .remove(MessageFlags::META_DIRTY);
+        }
+
+        // Propagate spool errors so callers (notably the SMTP
+        // ingress path and load-shedding-aware code) can react
+        // rather than silently accepting a message whose persistent
+        // storage failed.
+        //
+        // For the both-failed case we preserve the typed
+        // SpoolUnhealthyError on the returned error chain when
+        // either side has one, so callers that match on
+        // root_cause (e.g. the SMTP server's user-facing 421
+        // shaping) still see the actionable reason.  The
+        // non-preferred error is folded into the context message so
+        // it is still visible to anything that formats the error
+        // with `:#`.
+        match (data_res, meta_res) {
+            (Ok(_), Ok(_)) => Ok(()),
+            (Err(data_err), Ok(_)) => Err(data_err.context("data spool store")),
+            (Ok(_), Err(meta_err)) => Err(meta_err.context("meta spool store")),
+            (Err(data_err), Err(meta_err)) => {
+                let data_unhealthy = data_err.root_cause().is::<::spool::SpoolUnhealthyError>();
+                let meta_unhealthy = meta_err.root_cause().is::<::spool::SpoolUnhealthyError>();
+                match (data_unhealthy, meta_unhealthy) {
+                    (true, _) => Err(data_err.context(format!(
+                        "data spool store; meta spool store also failed: {meta_err:#}"
+                    ))),
+                    (false, true) => Err(meta_err.context(format!(
+                        "meta spool store; data spool store also failed: {data_err:#}"
+                    ))),
+                    (false, false) => Err(anyhow::anyhow!(
+                        "data spool store: {data_err:#}; meta spool store: {meta_err:#}"
+                    )),
+                }
+            }
+        }
+    }
+
+    pub fn id(&self) -> &SpoolId {
+        &self.msg_and_id.id
+    }
+
+    /// Save the data+meta if needed, then release both
+    pub async fn save_and_shrink(&self) -> anyhow::Result<bool> {
+        self.save(None).await?;
+        self.shrink()
+    }
+
+    /// Save the data+meta if needed, then release just the data
+    pub async fn save_and_shrink_data(&self) -> anyhow::Result<bool> {
+        self.save(None).await?;
+        self.shrink_data()
+    }
+
+    pub fn shrink_data(&self) -> anyhow::Result<bool> {
+        let mut inner = self.msg_and_id.inner.lock();
+        let mut did_shrink = false;
+        if inner.flags.contains(MessageFlags::DATA_DIRTY) {
+            anyhow::bail!("Cannot shrink message: DATA_DIRTY");
+        }
+        if inner.data.take().is_some() {
+            did_shrink = true;
+        }
+        Ok(did_shrink)
+    }
+
+    pub fn shrink(&self) -> anyhow::Result<bool> {
+        let mut inner = self.msg_and_id.inner.lock();
+        let mut did_shrink = false;
+        if inner.flags.contains(MessageFlags::DATA_DIRTY) {
+            anyhow::bail!("Cannot shrink message: DATA_DIRTY");
+        }
+        if inner.flags.contains(MessageFlags::META_DIRTY) {
+            anyhow::bail!("Cannot shrink message: META_DIRTY");
+        }
+        if inner.metadata.take().is_some() {
+            did_shrink = true;
+        }
+        if inner.data.take().is_some() {
+            did_shrink = true;
+        }
+        Ok(did_shrink)
+    }
+
+    pub async fn sender(&self) -> anyhow::Result<EnvelopeAddress> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            Some(meta) => Ok(meta.sender.clone()),
+            None => anyhow::bail!("Message::sender metadata is not loaded"),
+        }
+    }
+
+    pub async fn set_sender(&self, sender: EnvelopeAddress) -> anyhow::Result<()> {
+        self.load_meta_if_needed().await?;
+        let mut inner = self.msg_and_id.inner.lock();
+        match &mut inner.metadata {
+            Some(meta) => {
+                meta.sender = sender;
+                inner.flags.set(MessageFlags::META_DIRTY, true);
+                Ok(())
+            }
+            None => anyhow::bail!("Message::set_sender: metadata is not loaded"),
+        }
+    }
+
+    #[deprecated = "use recipient_list or first_recipient instead"]
+    pub async fn recipient(&self) -> anyhow::Result<EnvelopeAddress> {
+        self.first_recipient().await
+    }
+
+    pub async fn first_recipient(&self) -> anyhow::Result<EnvelopeAddress> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            Some(meta) => match meta.recipient.first() {
+                Some(recip) => Ok(recip.clone()),
+                None => anyhow::bail!("recipient list is empty!?"),
+            },
+            None => anyhow::bail!("Message::first_recipient: metadata is not loaded"),
+        }
+    }
+
+    pub async fn recipient_list(&self) -> anyhow::Result<Vec<EnvelopeAddress>> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            Some(meta) => Ok(meta.recipient.clone()),
+            None => anyhow::bail!("Message::recipient_list: metadata is not loaded"),
+        }
+    }
+
+    pub async fn recipient_list_string(&self) -> anyhow::Result<Vec<String>> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            Some(meta) => Ok(meta.recipient.iter().map(|a| a.to_string()).collect()),
+            None => anyhow::bail!("Message::recipient_list_string: metadata is not loaded"),
+        }
+    }
+
+    #[deprecated = "use set_recipient_list instead"]
+    pub async fn set_recipient(&self, recipient: EnvelopeAddress) -> anyhow::Result<()> {
+        self.set_recipient_list(vec![recipient]).await
+    }
+
+    pub async fn set_recipient_list(&self, recipient: Vec<EnvelopeAddress>) -> anyhow::Result<()> {
+        self.load_meta_if_needed().await?;
+
+        let mut inner = self.msg_and_id.inner.lock();
+        match &mut inner.metadata {
+            Some(meta) => {
+                meta.recipient = recipient;
+                inner.flags.set(MessageFlags::META_DIRTY, true);
+                Ok(())
+            }
+            None => anyhow::bail!("Message::set_recipient_list: metadata is not loaded"),
+        }
+    }
+
+    pub fn is_meta_loaded(&self) -> bool {
+        self.msg_and_id.inner.lock().metadata.is_some()
+    }
+
+    pub fn is_data_loaded(&self) -> bool {
+        self.msg_and_id.inner.lock().data.is_some()
+    }
+
+    pub async fn load_meta_if_needed(&self) -> anyhow::Result<()> {
+        if self.is_meta_loaded() {
+            return Ok(());
+        }
+        self.load_meta().await
+    }
+
+    pub async fn data(&self) -> anyhow::Result<Arc<Box<[u8]>>> {
+        self.load_data_if_needed().await
+    }
+
+    async fn load_data_if_needed(&self) -> anyhow::Result<Arc<Box<[u8]>>> {
+        if self.is_data_loaded() {
+            return Ok(self.get_data_maybe_not_loaded());
+        }
+        self.load_data().await
+    }
+
+    pub async fn load_meta(&self) -> anyhow::Result<()> {
+        let _timer = LOAD_META_HIST.start_timer();
+        self.load_meta_from(&**get_meta_spool()).await
+    }
+
+    async fn load_meta_from(&self, meta_spool: &(dyn Spool + Send + Sync)) -> anyhow::Result<()> {
+        let id = self.id();
+        let data = meta_spool.load(*id).await?;
+        let mut inner = self.msg_and_id.inner.lock();
+        let metadata: MetaData = serde_json::from_slice(&data)?;
+        inner.set_metadata(Box::new(metadata));
+        Ok(())
+    }
+
+    pub async fn load_data(&self) -> anyhow::Result<Arc<Box<[u8]>>> {
+        let _timer = LOAD_DATA_HIST.start_timer();
+        self.load_data_from(&**get_data_spool()).await
+    }
+
+    async fn load_data_from(
+        &self,
+        data_spool: &(dyn Spool + Send + Sync),
+    ) -> anyhow::Result<Arc<Box<[u8]>>> {
+        let data = Arc::new(data_spool.load(*self.id()).await?.into_boxed_slice());
+        let mut inner = self.msg_and_id.inner.lock();
+        inner.set_data(data.clone());
+        Ok(data)
+    }
+
+    pub fn assign_data(&self, data: Vec<u8>) {
+        let mut inner = self.msg_and_id.inner.lock();
+        inner.set_data(Arc::new(data.into_boxed_slice()));
+        inner.flags.set(MessageFlags::DATA_DIRTY, true);
+    }
+
+    pub fn get_data_maybe_not_loaded(&self) -> Arc<Box<[u8]>> {
+        let inner = self.msg_and_id.inner.lock();
+        inner.data_arc()
+    }
+
+    pub async fn set_meta<S: AsRef<str>, V: Into<serde_json::Value>>(
+        &self,
+        key: S,
+        value: V,
+    ) -> anyhow::Result<()> {
+        self.load_meta_if_needed().await?;
+        let mut inner = self.msg_and_id.inner.lock();
+        match &mut inner.metadata {
+            None => anyhow::bail!("set_meta: metadata must be loaded first"),
+            Some(meta) => {
+                let key = key.as_ref();
+                let value = value.into();
+
+                match &mut meta.meta {
+                    serde_json::Value::Object(map) => {
+                        map.insert(key.to_string(), value);
+                    }
+                    _ => anyhow::bail!("metadata is somehow not a json object"),
+                }
+
+                inner.flags.set(MessageFlags::META_DIRTY, true);
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn unset_meta<S: AsRef<str>>(&self, key: S) -> anyhow::Result<()> {
+        self.load_meta_if_needed().await?;
+        let mut inner = self.msg_and_id.inner.lock();
+        match &mut inner.metadata {
+            None => anyhow::bail!("set_meta: metadata must be loaded first"),
+            Some(meta) => {
+                let key = key.as_ref();
+
+                match &mut meta.meta {
+                    serde_json::Value::Object(map) => {
+                        map.remove(key);
+                    }
+                    _ => anyhow::bail!("metadata is somehow not a json object"),
+                }
+
+                inner.flags.set(MessageFlags::META_DIRTY, true);
+                Ok(())
+            }
+        }
+    }
+
+    /// Retrieve `key` as a String.
+    pub async fn get_meta_string<S: serde_json::value::Index + std::fmt::Display + Copy>(
+        &self,
+        key: S,
+    ) -> anyhow::Result<Option<String>> {
+        match self.get_meta(key).await {
+            Ok(serde_json::Value::String(value)) => Ok(Some(value.to_string())),
+            Ok(serde_json::Value::Null) => Ok(None),
+            hmm => {
+                anyhow::bail!("expected '{key}' to be a string value, got {hmm:?}");
+            }
+        }
+    }
+
+    pub async fn get_meta_obj(&self) -> anyhow::Result<serde_json::Value> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            None => anyhow::bail!("get_meta_obj: metadata must be loaded first"),
+            Some(meta) => Ok(meta.meta.clone()),
+        }
+    }
+
+    pub async fn get_meta<S: serde_json::value::Index>(
+        &self,
+        key: S,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.load_meta_if_needed().await?;
+        let inner = self.msg_and_id.inner.lock();
+        match &inner.metadata {
+            None => anyhow::bail!("get_meta: metadata must be loaded first"),
+            Some(meta) => match meta.meta.get(key) {
+                Some(value) => Ok(value.clone()),
+                None => Ok(serde_json::Value::Null),
+            },
+        }
+    }
+
+    pub fn age(&self, now: DateTime<Utc>) -> chrono::Duration {
+        self.msg_and_id.id.age(now)
+    }
+
+    pub async fn get_queue_name(&self) -> anyhow::Result<String> {
+        Ok(match self.get_meta_string("queue").await? {
+            Some(name) => name,
+            None => {
+                let name = QueueNameComponents::format(
+                    self.get_meta_string("campaign").await?,
+                    self.get_meta_string("tenant").await?,
+                    self.first_recipient()
+                        .await?
+                        .domain()
+                        .to_string()
+                        .to_lowercase(),
+                    self.get_meta_string("routing_domain").await?,
+                );
+                name.to_string()
+            }
+        })
+    }
+
+    #[cfg(feature = "impl")]
+    pub async fn arc_verify(
+        &self,
+        opt_resolver_name: Option<String>,
+    ) -> anyhow::Result<AuthenticationResult> {
+        let resolver = get_resolver_instance(&opt_resolver_name)?;
+        let data = self.data().await?;
+        let bytes = mailparsing::SharedString::from(data.as_ref().as_ref());
+
+        let parsed = mailparsing::Header::parse_headers(bytes.clone())?;
+        let message = kumo_dkim::ParsedEmail::HeaderOnlyParse { bytes, parsed };
+
+        let arc = ARC::verify(&message, &**resolver).await;
+        Ok(arc.authentication_result())
+    }
+
+    #[cfg(feature = "impl")]
+    pub async fn arc_seal(
+        &self,
+        signer: Signer,
+        auth_results: AuthenticationResults,
+        opt_resolver_name: Option<String>,
+    ) -> anyhow::Result<()> {
+        let resolver = get_resolver_instance(&opt_resolver_name)?;
+        let data = self.data().await?;
+        let bytes = mailparsing::SharedString::from(data.as_ref().as_ref());
+        let parsed = mailparsing::Header::parse_headers(bytes.clone())?;
+        let message = kumo_dkim::ParsedEmail::HeaderOnlyParse { bytes, parsed };
+        let arc = ARC::verify(&message, &**resolver).await;
+
+        let headers = arc.seal(&message, auth_results, signer.signer())?;
+        if !headers.is_empty() {
+            let mut new_data = Vec::<u8>::with_capacity(data.len() + 1024);
+
+            for hdr in headers {
+                hdr.write_header(&mut new_data).ok();
+            }
+            new_data.extend_from_slice(&data);
+            self.assign_data(new_data);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "impl")]
+    pub async fn dkim_verify(
+        &self,
+        opt_resolver_name: Option<String>,
+    ) -> anyhow::Result<Vec<AuthenticationResult>> {
+        let resolver = get_resolver_instance(&opt_resolver_name)?;
+        let data = self.data().await?;
+        let bytes = mailparsing::SharedString::from(data.as_ref().as_ref());
+
+        let parsed = mailparsing::Header::parse_headers(bytes.clone())?;
+        if parsed
+            .overall_conformance
+            .contains(MessageConformance::NON_CANONICAL_LINE_ENDINGS)
+        {
+            return Ok(vec![AuthenticationResult {
+                method: "dkim".into(),
+                method_version: None,
+                result: "permerror".into(),
+                reason: Some("message has non-canonical line endings".into()),
+                props: Default::default(),
+            }]);
+        }
+        let message = kumo_dkim::ParsedEmail::HeaderOnlyParse { bytes, parsed };
+
+        let results = kumo_dkim::verify_email_with_resolver(&message, &**resolver).await?;
+        Ok(results)
+    }
+
+    /// Parses the content into an owned MimePart.
+    /// Changes to that MimePart are NOT reflected in the underlying
+    /// message; you must re-assign the message data if you wish to modify
+    /// the message content.
+    pub async fn parse(&self) -> anyhow::Result<MimePart<'static>> {
+        let data = self.data().await?;
+        let owned_data = String::from_utf8_lossy(data.as_ref().as_ref()).to_string();
+        Ok(MimePart::parse(owned_data)?)
+    }
+
+    pub async fn parse_rfc3464(&self) -> anyhow::Result<Option<Report>> {
+        let data = self.data().await?;
+        Report::parse(&data)
+    }
+
+    pub async fn parse_rfc5965(&self) -> anyhow::Result<Option<ARFReport>> {
+        let data = self.data().await?;
+        ARFReport::parse(&data)
+    }
+
+    pub async fn prepend_header(&self, name: Option<&str>, value: &[u8]) -> anyhow::Result<()> {
+        let data = self.data().await?;
+        let mut new_data = Vec::with_capacity(size_header(name, value) + 2 + data.len());
+        emit_header(&mut new_data, name, value);
+        new_data.extend_from_slice(&data);
+        self.assign_data(new_data);
+        Ok(())
+    }
+
+    pub async fn append_header(&self, name: Option<&str>, value: &[u8]) -> anyhow::Result<()> {
+        let data = self.data().await?;
+        let mut new_data = Vec::with_capacity(size_header(name, value.as_bytes()) + 2 + data.len());
+        for (idx, window) in data.windows(4).enumerate() {
+            if window == b"\r\n\r\n" {
+                let headers = &data[0..idx + 2];
+                let body = &data[idx + 2..];
+
+                new_data.extend_from_slice(headers);
+                emit_header(&mut new_data, name, value);
+                new_data.extend_from_slice(body);
+                self.assign_data(new_data);
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!("append_header could not find the end of the header block");
+    }
+
+    pub async fn get_address_header(
+        &self,
+        header_name: &str,
+    ) -> anyhow::Result<Option<HeaderAddressList>> {
+        let data = self.data().await?;
+        let HeaderParseResult { headers, .. } =
+            mailparsing::Header::parse_headers(data.as_ref().as_ref())?;
+
+        match headers.get_first(header_name) {
+            Some(hdr) => {
+                let list = hdr.as_address_list()?;
+                let result: HeaderAddressList = list.into();
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_first_named_header_value(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<BString>> {
+        let data = self.data().await?;
+        let HeaderParseResult { headers, .. } = Header::parse_headers(data.as_ref().as_ref())?;
+
+        match headers.get_first(name) {
+            Some(hdr) => Ok(Some(
+                hdr.as_unstructured()
+                    .unwrap_or_else(|_| hdr.get_raw_value().into()),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_all_named_header_values(&self, name: &str) -> anyhow::Result<Vec<BString>> {
+        let data = self.data().await?;
+        let HeaderParseResult { headers, .. } = Header::parse_headers(data.as_ref().as_ref())?;
+
+        let mut values = vec![];
+        for hdr in headers.iter_named(name) {
+            values.push(
+                hdr.as_unstructured()
+                    .unwrap_or_else(|_| hdr.get_raw_value().into()),
+            );
+        }
+        Ok(values)
+    }
+
+    pub async fn get_all_headers(&self) -> anyhow::Result<Vec<(BString, BString)>> {
+        let data = self.data().await?;
+        let HeaderParseResult { headers, .. } = Header::parse_headers(data.as_ref().as_ref())?;
+
+        let mut values = vec![];
+        for hdr in headers.iter() {
+            values.push((
+                hdr.get_name().into(),
+                hdr.as_unstructured()
+                    .unwrap_or_else(|_| hdr.get_raw_value().into()),
+            ));
+        }
+        Ok(values)
+    }
+
+    pub async fn retain_headers<F: FnMut(usize, &Header) -> bool>(
+        &self,
+        mut func: F,
+    ) -> anyhow::Result<()> {
+        let data = self.data().await?;
+        let mut new_data = Vec::with_capacity(data.len());
+        let HeaderParseResult {
+            headers,
+            body_offset,
+            ..
+        } = Header::parse_headers(data.as_ref().as_ref())?;
+        for (idx, hdr) in headers.iter().enumerate() {
+            let retain = (func)(idx, hdr);
+            if !retain {
+                continue;
+            }
+            hdr.write_header(&mut new_data)?;
+        }
+        new_data.extend_from_slice(b"\r\n");
+        new_data.extend_from_slice(&data[body_offset..]);
+        self.assign_data(new_data);
+        Ok(())
+    }
+
+    pub async fn remove_first_named_header(&self, name: &str) -> anyhow::Result<()> {
+        let mut removed = false;
+        self.retain_headers(|_, hdr| {
+            if hdr.get_name().eq_ignore_ascii_case(name.as_bytes()) && !removed {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        })
+        .await
+    }
+
+    pub async fn import_x_headers(&self, names: Vec<String>) -> anyhow::Result<()> {
+        let specs = if names.is_empty() {
+            vec![ImportHeaderSpec {
+                name: "X-*".to_string(),
+                ..ImportHeaderSpec::default()
+            }]
+        } else {
+            names
+                .into_iter()
+                .map(|name| ImportHeaderSpec {
+                    name,
+                    ..ImportHeaderSpec::default()
+                })
+                .collect()
+        };
+        self.import_headers(specs).await
+    }
+
+    pub async fn import_headers(&self, specs: Vec<ImportHeaderSpec>) -> anyhow::Result<()> {
+        let compiled: Vec<CompiledImportHeaderSpec> = specs
+            .into_iter()
+            .map(CompiledImportHeaderSpec::compile)
+            .collect::<anyhow::Result<_>>()?;
+
+        let data = self.data().await?;
+        let HeaderParseResult { headers, .. } = Header::parse_headers(data.as_ref().as_ref())?;
+
+        let mut accumulators: Vec<PerSpecAccumulator> = compiled
+            .iter()
+            .map(|s| PerSpecAccumulator::new(s.match_mode))
+            .collect();
+        let mut indices_to_remove: HashSet<usize> = HashSet::new();
+
+        for (idx, hdr) in headers.iter().enumerate() {
+            let hdr_name = hdr.get_name();
+            for (spec_idx, spec) in compiled.iter().enumerate() {
+                if spec.matches(hdr_name) {
+                    let key = spec.target_key(&hdr.get_name_lossy());
+                    let value = hdr.as_unstructured()?.to_str_lossy().to_string();
+                    accumulators[spec_idx].record(key, value);
+                    if spec.remove {
+                        indices_to_remove.insert(idx);
+                    }
+                    break;
+                }
+            }
+        }
+
+        for acc in accumulators {
+            acc.write_to(self).await?;
+        }
+
+        if !indices_to_remove.is_empty() {
+            self.retain_headers(|idx, _| !indices_to_remove.contains(&idx))
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn remove_x_headers(&self, names: Vec<String>) -> anyhow::Result<()> {
+        self.retain_headers(|_, hdr| {
+            if names.is_empty() {
+                !is_x_header(hdr.get_name())
+            } else {
+                !names
+                    .iter()
+                    .any(|n| hdr.get_name().eq_ignore_ascii_case(n.as_bytes()))
+            }
+        })
+        .await
+    }
+
+    pub async fn remove_all_named_headers(&self, name: &str) -> anyhow::Result<()> {
+        self.retain_headers(|_, hdr| !hdr.get_name().eq_ignore_ascii_case(name.as_bytes()))
+            .await
+    }
+
+    #[cfg(feature = "impl")]
+    pub async fn dkim_sign(&self, signer: Signer) -> anyhow::Result<()> {
+        let data = self.data().await?;
+        let header = if let Some(runtime) = SIGN_POOL.get() {
+            runtime.spawn_blocking(move || signer.sign(&data)).await??
+        } else {
+            signer.sign(&data)?
+        };
+        self.prepend_header(None, header.as_bytes()).await?;
+        Ok(())
+    }
+
+    pub async fn import_scheduling_header(
+        &self,
+        header_name: &str,
+        remove: bool,
+    ) -> anyhow::Result<Option<Scheduling>> {
+        if let Some(value) = self.get_first_named_header_value(header_name).await? {
+            let sched: Scheduling = serde_json::from_slice(&value).with_context(|| {
+                format!("{value} from header {header_name} is not a valid Scheduling header")
+            })?;
+            let result = self.set_scheduling(Some(sched)).await?;
+
+            if remove {
+                self.remove_all_named_headers(header_name).await?;
+            }
+
+            Ok(result)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn append_text_plain(&self, content: &str) -> anyhow::Result<bool> {
+        let data = self.data().await?;
+        let mut msg = MimePart::parse(data.as_ref().as_ref())?;
+        let parts = msg.simplified_structure_pointers()?;
+        if let Some(p) = parts.text_part.and_then(|p| msg.resolve_ptr_mut(p)) {
+            match p.body()? {
+                DecodedBody::Text(text) => {
+                    let mut text = text.as_bytes().to_vec();
+                    text.push_str("\r\n");
+                    text.push_str(content);
+                    p.replace_text_body("text/plain", &*text)?;
+
+                    let new_data = msg.to_message_bytes()?;
+                    self.assign_data(new_data);
+                    Ok(true)
+                }
+                DecodedBody::Binary(_) => {
+                    anyhow::bail!("expected text/plain part to be text, but it is binary");
+                }
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn append_text_html(&self, content: &str) -> anyhow::Result<bool> {
+        let data = self.data().await?;
+        let mut msg = MimePart::parse(data.as_ref().as_ref())?;
+        let parts = msg.simplified_structure_pointers()?;
+        if let Some(p) = parts.html_part.and_then(|p| msg.resolve_ptr_mut(p)) {
+            match p.body()? {
+                DecodedBody::Text(text) => {
+                    let mut text = text.as_bytes().to_vec();
+
+                    match text.rfind("</body>").or_else(|| text.rfind("</BODY>")) {
+                        Some(idx) => {
+                            text.insert_str(idx, content);
+                            text.insert_str(idx, "\r\n");
+                        }
+                        None => {
+                            // Just append
+                            text.push_str("\r\n");
+                            text.push_str(content);
+                        }
+                    }
+
+                    p.replace_text_body("text/html", &*text)?;
+
+                    let new_data = msg.to_message_bytes()?;
+                    self.assign_data(new_data);
+                    Ok(true)
+                }
+                DecodedBody::Binary(_) => {
+                    anyhow::bail!("expected text/html part to be text, but it is binary");
+                }
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn check_fix_conformance(
+        &self,
+        check: MessageConformance,
+        fix: MessageConformance,
+        settings: Option<&CheckFixSettings>,
+    ) -> anyhow::Result<()> {
+        let data = self.data().await?;
+        let data_bytes = data.as_ref().as_ref();
+        let msg = MimePart::parse(data_bytes)?;
+
+        let mut settings = settings.cloned().unwrap_or_default();
+
+        if fix.contains(MessageConformance::MISSING_MESSAGE_ID_HEADER)
+            && settings.message_id.is_none()
+            && matches!(msg.headers().message_id(), Err(_) | Ok(None))
+        {
+            let sender = self.sender().await?;
+            let domain = sender.domain();
+            let id = *self.id();
+            settings.message_id.replace(format!("{id}@{domain}"));
+        }
+
+        if settings.detect_encoding {
+            settings.data_bytes.replace(data.clone());
+        }
+
+        let opt_msg = msg.check_fix_conformance(check, fix, settings)?;
+
+        if let Some(msg) = opt_msg {
+            let new_data = msg.to_message_bytes()?;
+            self.assign_data(new_data);
+        }
+
+        Ok(())
+    }
+}
+
+fn imported_header_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c.to_ascii_lowercase() {
+            '-' => '_',
+            c => c,
+        })
+        .collect()
+}
+
+fn is_x_header(name: &[u8]) -> bool {
+    name.starts_with_str("X-") || name.starts_with_str("x-")
+}
+
+#[derive(Default, Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    First,
+    #[default]
+    Last,
+    All,
+}
+
+#[derive(Default, Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NameTransform {
+    #[default]
+    SnakeCase,
+    KebabCase,
+    CamelCase,
+    PascalCase,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportHeaderSpec {
+    pub name: String,
+    #[serde(default, rename = "match")]
+    pub match_mode: MatchMode,
+    #[serde(default)]
+    pub transform: NameTransform,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub remove: bool,
+}
+
+impl Default for ImportHeaderSpec {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            match_mode: MatchMode::default(),
+            transform: NameTransform::default(),
+            target: None,
+            remove: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum HeaderPattern {
+    /// Case-insensitive exact match.
+    Exact(String),
+    /// Matches any header whose name (case-insensitively) starts with the
+    /// given prefix. Built from a pattern like `X-*`.
+    Prefix(String),
+}
+
+#[derive(Debug, Clone)]
+struct CompiledImportHeaderSpec {
+    pattern: HeaderPattern,
+    match_mode: MatchMode,
+    transform: NameTransform,
+    target: Option<String>,
+    remove: bool,
+}
+
+impl CompiledImportHeaderSpec {
+    fn compile(spec: ImportHeaderSpec) -> anyhow::Result<Self> {
+        let pattern = compile_header_pattern(&spec.name)?;
+        if spec.target.is_some() && matches!(pattern, HeaderPattern::Prefix(_)) {
+            anyhow::bail!(
+                "import_headers: `target` cannot be used with wildcard pattern {:?}",
+                spec.name
+            );
+        }
+        Ok(Self {
+            pattern,
+            match_mode: spec.match_mode,
+            transform: spec.transform,
+            target: spec.target,
+            remove: spec.remove,
+        })
+    }
+
+    fn matches(&self, hdr_name: &[u8]) -> bool {
+        match &self.pattern {
+            HeaderPattern::Exact(s) => hdr_name.eq_ignore_ascii_case(s.as_bytes()),
+            HeaderPattern::Prefix(p) => {
+                hdr_name.len() >= p.len() && hdr_name[..p.len()].eq_ignore_ascii_case(p.as_bytes())
+            }
+        }
+    }
+
+    fn target_key(&self, matched_name: &str) -> String {
+        if let Some(target) = &self.target {
+            return target.clone();
+        }
+        apply_name_transform(matched_name, self.transform)
+    }
+}
+
+fn compile_header_pattern(pat: &str) -> anyhow::Result<HeaderPattern> {
+    if pat.is_empty() {
+        anyhow::bail!("import_headers: header name pattern must not be empty");
+    }
+    let star_count = pat.chars().filter(|c| *c == '*').count();
+    if star_count == 0 {
+        return Ok(HeaderPattern::Exact(pat.to_string()));
+    }
+    let Some(prefix) = pat.strip_suffix('*') else {
+        anyhow::bail!(
+            "import_headers: only a single trailing `*` is supported in pattern {:?}",
+            pat
+        );
+    };
+    if star_count > 1 {
+        anyhow::bail!(
+            "import_headers: only a single trailing `*` is supported in pattern {:?}",
+            pat
+        );
+    }
+    if prefix.is_empty() {
+        anyhow::bail!("import_headers: bare `*` patterns are not supported");
+    }
+    Ok(HeaderPattern::Prefix(prefix.to_string()))
+}
+
+fn apply_name_transform(name: &str, transform: NameTransform) -> String {
+    match transform {
+        NameTransform::SnakeCase => imported_header_name(name),
+        NameTransform::KebabCase => name
+            .split('-')
+            .map(|p| p.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join("-"),
+        NameTransform::CamelCase => name
+            .split('-')
+            .enumerate()
+            .map(|(i, p)| {
+                if i == 0 {
+                    p.to_ascii_lowercase()
+                } else {
+                    titlecase_ascii(p)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        NameTransform::PascalCase => name
+            .split('-')
+            .map(titlecase_ascii)
+            .collect::<Vec<_>>()
+            .join(""),
+    }
+}
+
+fn titlecase_ascii(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let mut out = String::with_capacity(s.len());
+            out.push(first.to_ascii_uppercase());
+            for c in chars {
+                out.push(c.to_ascii_lowercase());
+            }
+            out
+        }
+    }
+}
+
+enum AccValue {
+    Str(String),
+    Arr(Vec<String>),
+}
+
+struct PerSpecAccumulator {
+    mode: MatchMode,
+    by_key: BTreeMap<String, AccValue>,
+}
+
+impl PerSpecAccumulator {
+    fn new(mode: MatchMode) -> Self {
+        Self {
+            mode,
+            by_key: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, key: String, value: String) {
+        match self.mode {
+            MatchMode::First => {
+                self.by_key.entry(key).or_insert(AccValue::Str(value));
+            }
+            MatchMode::Last => {
+                self.by_key.insert(key, AccValue::Str(value));
+            }
+            MatchMode::All => {
+                let entry = self
+                    .by_key
+                    .entry(key)
+                    .or_insert_with(|| AccValue::Arr(Vec::new()));
+                if let AccValue::Arr(v) = entry {
+                    v.push(value);
+                }
+            }
+        }
+    }
+
+    async fn write_to(self, msg: &Message) -> anyhow::Result<()> {
+        for (key, value) in self.by_key {
+            match value {
+                AccValue::Str(s) => msg.set_meta(key, s).await?,
+                AccValue::Arr(arr) => {
+                    let json = serde_json::Value::Array(
+                        arr.into_iter().map(serde_json::Value::String).collect(),
+                    );
+                    msg.set_meta(key, json).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn size_header(name: Option<&str>, value: &[u8]) -> usize {
+    name.map(|name| name.len() + 2).unwrap_or(0) + value.len()
+}
+
+fn emit_header(dest: &mut Vec<u8>, name: Option<&str>, value: &[u8]) {
+    if let Some(name) = name {
+        dest.extend_from_slice(name.as_bytes());
+        dest.extend_from_slice(b": ");
+    }
+    dest.extend_from_slice(value);
+    if !value.ends_with_str("\r\n") {
+        dest.extend_from_slice(b"\r\n");
+    }
+}
+
+#[cfg(feature = "impl")]
+impl UserData for Message {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_async_method(
+            "set_meta",
+            move |_, this, (name, value): (String, mlua::Value)| async move {
+                let value = serde_json::value::to_value(value).map_err(any_err)?;
+                this.set_meta(name, value).await.map_err(any_err)?;
+                Ok(())
+            },
+        );
+        methods.add_async_method("get_meta", move |lua, this, name: String| async move {
+            let value = this.get_meta(name).await.map_err(any_err)?;
+            Ok(Some(lua.to_value_with(&value, serialize_options())?))
+        });
+        methods.add_async_method("get_data", |lua, this, _: ()| async move {
+            let data = this.data().await.map_err(any_err)?;
+            lua.create_string(&*data)
+        });
+        methods.add_method("set_data", move |_lua, this, data: mlua::String| {
+            this.assign_data(data.as_bytes().to_vec());
+            Ok(())
+        });
+
+        methods.add_async_method("parse_mime", |_lua, this, _: ()| async move {
+            let data = this.data().await.map_err(any_err)?;
+            let owned_data = BString::new(data.as_ref().to_vec());
+            let part = MimePart::parse(owned_data).map_err(any_err)?;
+            Ok(mod_mimepart::PartRef::new(part))
+        });
+
+        methods.add_async_method("append_text_plain", |_lua, this, data: String| async move {
+            this.append_text_plain(&data).await.map_err(any_err)
+        });
+
+        methods.add_async_method("append_text_html", |_lua, this, data: String| async move {
+            this.append_text_html(&data).await.map_err(any_err)
+        });
+
+        methods.add_method("id", move |_, this, _: ()| Ok(this.id().to_string()));
+        methods.add_async_method("sender", move |_, this, _: ()| async move {
+            this.sender().await.map_err(any_err)
+        });
+
+        methods.add_method("num_attempts", move |_, this, _: ()| {
+            Ok(this.get_num_attempts())
+        });
+        methods.add_method("increment_num_attempts", move |_, this, _: ()| {
+            let _: () = this.increment_num_attempts();
+            Ok(())
+        });
+
+        methods.add_async_method("queue_name", move |_, this, _: ()| async move {
+            this.get_queue_name().await.map_err(any_err)
+        });
+
+        methods.add_async_method("set_due", move |lua, this, due: mlua::Value| async move {
+            let due: Option<DateTime<Utc>> = lua.from_value(due)?;
+            let revised_due = this.set_due(due).await.map_err(any_err)?;
+            lua.to_value(&revised_due)
+        });
+
+        methods.add_async_method(
+            "set_sender",
+            move |lua, this, value: mlua::Value| async move {
+                let sender = match value {
+                    mlua::Value::String(s) => {
+                        let s = s.to_str()?;
+                        EnvelopeAddress::parse(&s).map_err(any_err)?
+                    }
+                    _ => lua.from_value::<EnvelopeAddress>(value.clone())?,
+                };
+                this.set_sender(sender).await.map_err(any_err)
+            },
+        );
+
+        methods.add_async_method("recipient", move |lua, this, _: ()| async move {
+            let mut recipients = this.recipient_list().await.map_err(any_err)?;
+            match recipients.len() {
+                0 => Ok(mlua::Value::Nil),
+                1 => {
+                    let recip: EnvelopeAddress = recipients.pop().expect("have 1");
+                    recip.into_lua(&lua)
+                }
+                _ => recipients.into_lua(&lua),
+            }
+        });
+
+        methods.add_async_method("recipient_list", move |lua, this, _: ()| async move {
+            let recipients = this.recipient_list().await.map_err(any_err)?;
+            recipients.into_lua(&lua)
+        });
+
+        methods.add_async_method(
+            "set_recipient",
+            move |lua, this, value: mlua::Value| async move {
+                let recipients = match value {
+                    mlua::Value::String(s) => {
+                        let s = s.to_str()?;
+                        vec![EnvelopeAddress::parse(&s).map_err(any_err)?]
+                    }
+                    _ => {
+                        if let Ok(recips) = lua.from_value::<Vec<EnvelopeAddress>>(value.clone()) {
+                            recips
+                        } else {
+                            vec![lua.from_value::<EnvelopeAddress>(value.clone())?]
+                        }
+                    }
+                };
+                this.set_recipient_list(recipients).await.map_err(any_err)
+            },
+        );
+
+        #[cfg(feature = "impl")]
+        methods.add_async_method("dkim_sign", |_, this, signer: Signer| async move {
+            this.dkim_sign(signer).await.map_err(any_err)
+        });
+
+        methods.add_async_method("shrink", |_, this, _: ()| async move {
+            if this.needs_save() {
+                this.save(None).await.map_err(any_err)?;
+            }
+            this.shrink().map_err(any_err)
+        });
+
+        methods.add_async_method("shrink_data", |_, this, _: ()| async move {
+            if this.needs_save() {
+                this.save(None).await.map_err(any_err)?;
+            }
+            this.shrink_data().map_err(any_err)
+        });
+
+        methods.add_async_method(
+            "add_authentication_results",
+            |lua, this, (serv_id, results): (mlua::String, mlua::Value)| async move {
+                let results: Vec<AuthenticationResult> = lua.from_value(results)?;
+                let results = AuthenticationResults {
+                    serv_id: serv_id.as_bytes().as_ref().into(),
+                    version: None,
+                    results,
+                };
+
+                this.prepend_header(
+                    Some("Authentication-Results"),
+                    results.encode_value().as_bytes(),
+                )
+                .await
+                .map_err(any_err)?;
+
+                Ok(())
+            },
+        );
+
+        #[cfg(feature = "impl")]
+        methods.add_async_method(
+            "arc_verify",
+            |lua, this, opt_resolver_name: Option<String>| async move {
+                let results = this.arc_verify(opt_resolver_name).await.map_err(any_err)?;
+                lua.to_value_with(&results, serialize_options())
+            },
+        );
+
+        #[cfg(feature = "impl")]
+        methods.add_async_method(
+            "arc_seal",
+            |lua,
+             this,
+             (signer, serv_id, auth_res, opt_resolver_name): (
+                Signer,
+                mlua::String,
+                mlua::Value,
+                Option<String>,
+            )| async move {
+                let results: Vec<AuthenticationResult> = lua.from_value(auth_res)?;
+                this.arc_seal(
+                    signer,
+                    AuthenticationResults {
+                        serv_id: serv_id.as_bytes().as_ref().into(),
+                        version: None,
+                        results,
+                    },
+                    opt_resolver_name,
+                )
+                .await
+                .map_err(any_err)
+            },
+        );
+
+        #[cfg(feature = "impl")]
+        methods.add_async_method(
+            "dkim_verify",
+            |lua, this, opt_resolver_name: Option<String>| async move {
+                let results = this.dkim_verify(opt_resolver_name).await.map_err(any_err)?;
+                lua.to_value_with(&results, serialize_options())
+            },
+        );
+
+        methods.add_async_method(
+            "prepend_header",
+            |_, this, (name, value, encode): (String, String, Option<bool>)| async move {
+                let encode = encode.unwrap_or(false);
+                if encode {
+                    let header = Header::new_unstructured(name.clone(), value);
+                    this.prepend_header(Some(&name), header.get_raw_value())
+                        .await
+                        .map_err(any_err)?;
+                } else {
+                    this.prepend_header(Some(&name), value.as_bytes())
+                        .await
+                        .map_err(any_err)?;
+                }
+                Ok(())
+            },
+        );
+        methods.add_async_method(
+            "append_header",
+            |_, this, (name, value, encode): (String, String, Option<bool>)| async move {
+                let encode = encode.unwrap_or(false);
+                if encode {
+                    let header = Header::new_unstructured(name.clone(), value);
+                    this.append_header(Some(&name), header.get_raw_value())
+                        .await
+                        .map_err(any_err)?;
+                } else {
+                    this.append_header(Some(&name), value.as_bytes())
+                        .await
+                        .map_err(any_err)?;
+                }
+                Ok(())
+            },
+        );
+        methods.add_async_method("get_address_header", |_, this, name: String| async move {
+            this.get_address_header(&name).await.map_err(any_err)
+        });
+        methods.add_async_method("from_header", |_, this, ()| async move {
+            this.get_address_header("From").await.map_err(any_err)
+        });
+        methods.add_async_method("to_header", |_, this, ()| async move {
+            this.get_address_header("To").await.map_err(any_err)
+        });
+
+        methods.add_async_method(
+            "get_first_named_header_value",
+            |_, this, name: String| async move {
+                this.get_first_named_header_value(&name)
+                    .await
+                    .map_err(any_err)
+            },
+        );
+        methods.add_async_method(
+            "get_all_named_header_values",
+            |_, this, name: String| async move {
+                this.get_all_named_header_values(&name)
+                    .await
+                    .map_err(any_err)
+            },
+        );
+        methods.add_async_method("get_all_headers", |_, this, _: ()| async move {
+            Ok(this
+                .get_all_headers()
+                .await
+                .map_err(any_err)?
+                .into_iter()
+                .map(|(name, value)| vec![name, value])
+                .collect::<Vec<Vec<BString>>>())
+        });
+        methods.add_async_method(
+            "import_x_headers",
+            |_, this, names: Option<Vec<String>>| async move {
+                this.import_x_headers(names.unwrap_or_default())
+                    .await
+                    .map_err(any_err)
+            },
+        );
+        methods.add_async_method(
+            "import_headers",
+            |_, this, specs: SerdeWrappedValue<Vec<ImportHeaderSpec>>| async move {
+                this.import_headers(specs.0).await.map_err(any_err)
+            },
+        );
+
+        methods.add_async_method(
+            "remove_x_headers",
+            |_, this, names: Option<Vec<String>>| async move {
+                this.remove_x_headers(names.unwrap_or_default())
+                    .await
+                    .map_err(any_err)
+            },
+        );
+        methods.add_async_method(
+            "remove_all_named_headers",
+            |_, this, name: String| async move {
+                this.remove_all_named_headers(&name).await.map_err(any_err)
+            },
+        );
+
+        methods.add_async_method(
+            "import_scheduling_header",
+            |lua, this, (header_name, remove): (String, bool)| async move {
+                let opt_schedule = this
+                    .import_scheduling_header(&header_name, remove)
+                    .await
+                    .map_err(any_err)?;
+                lua.to_value(&opt_schedule)
+            },
+        );
+
+        methods.add_async_method(
+            "set_scheduling",
+            move |lua, this, params: mlua::Value| async move {
+                let sched: Option<Scheduling> = from_lua_value(&lua, params)?;
+                let opt_schedule = this.set_scheduling(sched).await.map_err(any_err)?;
+                lua.to_value(&opt_schedule)
+            },
+        );
+
+        methods.add_async_method("parse_rfc3464", |lua, this, _: ()| async move {
+            let report = this.parse_rfc3464().await.map_err(any_err)?;
+            match report {
+                Some(report) => lua.to_value_with(&report, serialize_options()),
+                None => Ok(mlua::Value::Nil),
+            }
+        });
+
+        methods.add_async_method("parse_rfc5965", |lua, this, _: ()| async move {
+            let report = this.parse_rfc5965().await.map_err(any_err)?;
+            match report {
+                Some(report) => lua.to_value_with(&report, serialize_options()),
+                None => Ok(mlua::Value::Nil),
+            }
+        });
+
+        methods.add_async_method("save", |_, this, ()| async move {
+            this.save(None).await.map_err(any_err)
+        });
+
+        methods.add_method("set_force_sync", move |_, this, force: bool| {
+            this.set_force_sync(force);
+            Ok(())
+        });
+
+        methods.add_async_method(
+            "check_fix_conformance",
+            |lua, this, (check, fix, settings): (String, String, Option<mlua::Value>)| async move {
+                use std::str::FromStr;
+                let check = MessageConformance::from_str(&check).map_err(any_err)?;
+                let fix = MessageConformance::from_str(&fix).map_err(any_err)?;
+
+                let settings = match settings {
+                    Some(v) => Some(lua.from_value(v).map_err(any_err)?),
+                    None => None,
+                };
+
+                match this
+                    .check_fix_conformance(check, fix, settings.as_ref())
+                    .await
+                {
+                    Ok(_) => Ok(None),
+                    Err(err) => Ok(Some(format!("{err:#}"))),
+                }
+            },
+        );
+    }
+}
+
+impl TimerEntryWithDelay for WeakMessage {
+    fn delay(&self) -> Duration {
+        match self.upgrade() {
+            None => {
+                // Dangling/Cancelled. Make it appear due immediately
+                Duration::from_millis(0)
+            }
+            Some(msg) => msg.delay(),
+        }
+    }
+}
+
+impl TimerEntryWithDelay for Message {
+    fn delay(&self) -> Duration {
+        let inner = self.msg_and_id.inner.lock();
+        match inner.due {
+            Some(time) => {
+                let now = Utc::now();
+                let delta = time - now;
+                delta.to_std().unwrap_or(Duration::from_millis(0))
+            }
+            None => Duration::from_millis(0),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use serde_json::json;
+
+    pub fn new_msg_body<S: AsRef<[u8]>>(s: S) -> Message {
+        Message::new_dirty(
+            SpoolId::new(),
+            EnvelopeAddress::parse("sender@example.com").unwrap(),
+            vec![EnvelopeAddress::parse("recip@example.com").unwrap()],
+            serde_json::json!({}),
+            Arc::new(s.as_ref().to_vec().into_boxed_slice()),
+        )
+        .unwrap()
+    }
+
+    fn data_as_string(msg: &Message) -> String {
+        String::from_utf8(msg.get_data_maybe_not_loaded().to_vec()).unwrap()
+    }
+
+    const X_HDR_CONTENT: &str =
+        "X-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nFrom :Someone\r\n\r\nBody";
+
+    #[tokio::test]
+    async fn import_all_x_headers() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.import_x_headers(vec![]).await.unwrap();
+        k9::assert_equal!(
+            msg.get_meta_obj().await.unwrap(),
+            json!({
+                "x_hello": "there",
+                "x_header": "value",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn meta_and_nil() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        // Ensure that json null round-trips
+        msg.set_meta("test", serde_json::Value::Null).await.unwrap();
+        k9::assert_equal!(msg.get_meta("test").await.unwrap(), serde_json::Value::Null);
+
+        // and that it is exposed to lua as nil
+        let lua = mlua::Lua::new();
+        lua.globals().set("msg", msg).unwrap();
+        lua.load("assert(msg:get_meta('test') == nil)")
+            .exec()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_sender_marks_meta_dirty() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        // Simulate a message that has already been persisted by clearing
+        // the dirty flags that new_dirty() sets on construction.
+        {
+            let mut inner = msg.msg_and_id.inner.lock();
+            inner
+                .flags
+                .remove(MessageFlags::DATA_DIRTY | MessageFlags::META_DIRTY);
+        }
+
+        msg.set_sender(EnvelopeAddress::parse("new-sender@example.com").unwrap())
+            .await
+            .unwrap();
+
+        let inner = msg.msg_and_id.inner.lock();
+        assert!(
+            inner.flags.contains(MessageFlags::META_DIRTY),
+            "changing the sender must mark the metadata dirty"
+        );
+        assert!(
+            !inner.flags.contains(MessageFlags::DATA_DIRTY),
+            "changing the sender must not mark the data dirty"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_recipient_list_marks_meta_dirty() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        {
+            let mut inner = msg.msg_and_id.inner.lock();
+            inner
+                .flags
+                .remove(MessageFlags::DATA_DIRTY | MessageFlags::META_DIRTY);
+        }
+
+        msg.set_recipient_list(vec![
+            EnvelopeAddress::parse("new-recip@example.com").unwrap()
+        ])
+        .await
+        .unwrap();
+
+        let inner = msg.msg_and_id.inner.lock();
+        assert!(
+            inner.flags.contains(MessageFlags::META_DIRTY),
+            "changing the recipient list must mark the metadata dirty"
+        );
+        assert!(
+            !inner.flags.contains(MessageFlags::DATA_DIRTY),
+            "changing the recipient list must not mark the data dirty"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sender_after_shrink_does_not_flag_empty_data() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        // Simulate a persisted-then-shrunk message: the dirty flags are cleared
+        // and the resident data buffer is empty (the body lives only on the
+        // spool).
+        {
+            let mut inner = msg.msg_and_id.inner.lock();
+            inner
+                .flags
+                .remove(MessageFlags::DATA_DIRTY | MessageFlags::META_DIRTY);
+            inner.data = None;
+        }
+
+        msg.set_sender(EnvelopeAddress::parse("new-sender@example.com").unwrap())
+            .await
+            .unwrap();
+
+        // Because an envelope change only dirties the metadata, save_to must
+        // not try to persist the empty data buffer, which would otherwise
+        // fail with "message data must not be empty".
+        assert!(
+            msg.get_data_if_dirty().is_none(),
+            "an envelope change must not flag the empty data buffer for saving"
+        );
+        assert!(
+            msg.needs_save(),
+            "the metadata change must still require a save"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_scheduling_marks_meta_dirty() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        {
+            let mut inner = msg.msg_and_id.inner.lock();
+            inner
+                .flags
+                .remove(MessageFlags::DATA_DIRTY | MessageFlags::META_DIRTY);
+        }
+
+        msg.set_scheduling(Some(Scheduling {
+            restriction: None,
+            first_attempt: None,
+            expires: None,
+        }))
+        .await
+        .unwrap();
+
+        let inner = msg.msg_and_id.inner.lock();
+        assert!(
+            inner.flags.contains(MessageFlags::META_DIRTY),
+            "changing the schedule must mark the metadata dirty"
+        );
+        assert!(
+            !inner.flags.contains(MessageFlags::DATA_DIRTY),
+            "changing the schedule must not mark the data dirty"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_some_x_headers() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.import_x_headers(vec!["x-hello".to_string()])
+            .await
+            .unwrap();
+        k9::assert_equal!(
+            msg.get_meta_obj().await.unwrap(),
+            json!({
+                "x_hello": "there",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn import_headers_wildcard_remove() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.import_headers(vec![ImportHeaderSpec {
+            name: "X-*".to_string(),
+            remove: true,
+            ..ImportHeaderSpec::default()
+        }])
+        .await
+        .unwrap();
+        k9::assert_equal!(
+            msg.get_meta_obj().await.unwrap(),
+            json!({
+                "x_hello": "there",
+                "x_header": "value",
+            })
+        );
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "Subject: Hello\r\nFrom :Someone\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_headers_match_modes() {
+        let body =
+            "Received: from a\r\nReceived: from b\r\nReceived: from c\r\nSubject: hi\r\n\r\nBody";
+        for (mode, expected) in [
+            (MatchMode::First, json!("from a")),
+            (MatchMode::Last, json!("from c")),
+            (MatchMode::All, json!(["from a", "from b", "from c"])),
+        ] {
+            let msg = new_msg_body(body);
+            msg.import_headers(vec![ImportHeaderSpec {
+                name: "Received".to_string(),
+                match_mode: mode,
+                ..ImportHeaderSpec::default()
+            }])
+            .await
+            .unwrap();
+            k9::assert_equal!(
+                msg.get_meta_obj().await.unwrap(),
+                json!({ "received": expected })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn import_headers_no_match_skips_meta() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        msg.import_headers(vec![ImportHeaderSpec {
+            name: "Nonexistent".to_string(),
+            match_mode: MatchMode::All,
+            ..ImportHeaderSpec::default()
+        }])
+        .await
+        .unwrap();
+        k9::assert_equal!(msg.get_meta_obj().await.unwrap(), json!({}));
+    }
+
+    #[tokio::test]
+    async fn import_headers_specific_before_wildcard() {
+        let body = "X-Campaign-Id: 42\r\nX-Mailer: foo\r\n\r\nBody";
+        let msg = new_msg_body(body);
+        msg.import_headers(vec![
+            ImportHeaderSpec {
+                name: "X-Campaign-Id".to_string(),
+                target: Some("campaign".to_string()),
+                ..ImportHeaderSpec::default()
+            },
+            ImportHeaderSpec {
+                name: "X-*".to_string(),
+                ..ImportHeaderSpec::default()
+            },
+        ])
+        .await
+        .unwrap();
+        k9::assert_equal!(
+            msg.get_meta_obj().await.unwrap(),
+            json!({
+                "campaign": "42",
+                "x_mailer": "foo",
+            })
+        );
+    }
+
+    #[test]
+    fn name_transforms() {
+        let n = "X-Campaign-Id";
+        k9::assert_equal!(
+            apply_name_transform(n, NameTransform::SnakeCase),
+            "x_campaign_id"
+        );
+        k9::assert_equal!(
+            apply_name_transform(n, NameTransform::KebabCase),
+            "x-campaign-id"
+        );
+        k9::assert_equal!(
+            apply_name_transform(n, NameTransform::CamelCase),
+            "xCampaignId"
+        );
+        k9::assert_equal!(
+            apply_name_transform(n, NameTransform::PascalCase),
+            "XCampaignId"
+        );
+    }
+
+    #[test]
+    fn pattern_compile_rejects_bad_patterns() {
+        compile_header_pattern("").unwrap_err();
+        compile_header_pattern("*").unwrap_err();
+        compile_header_pattern("*-Id").unwrap_err();
+        compile_header_pattern("X-*-Id").unwrap_err();
+        compile_header_pattern("X-**").unwrap_err();
+        assert!(matches!(
+            compile_header_pattern("Subject").unwrap(),
+            HeaderPattern::Exact(_)
+        ));
+        assert!(matches!(
+            compile_header_pattern("X-*").unwrap(),
+            HeaderPattern::Prefix(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn import_headers_target_with_wildcard_rejected() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+        msg.import_headers(vec![ImportHeaderSpec {
+            name: "X-*".to_string(),
+            target: Some("oops".to_string()),
+            ..ImportHeaderSpec::default()
+        }])
+        .await
+        .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn remove_all_x_headers() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.remove_x_headers(vec![]).await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "Subject: Hello\r\nFrom :Someone\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepend_header_2_params() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.prepend_header(Some("Date"), b"Today").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "Date: Today\r\nX-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nFrom :Someone\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepend_header_1_params() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.prepend_header(None, b"Date: Today").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "Date: Today\r\nX-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nFrom :Someone\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_header_2_params() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.append_header(Some("Date"), b"Today").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "X-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nFrom :Someone\r\nDate: Today\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_header_1_params() {
+        let msg = new_msg_body(X_HDR_CONTENT);
+
+        msg.append_header(None, b"Date: Today").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "X-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nFrom :Someone\r\nDate: Today\r\n\r\nBody"
+        );
+    }
+
+    const MULTI_HEADER_CONTENT: &str =
+        "X-Hello: there\r\nX-Header: value\r\nSubject: Hello\r\nX-Header: another value\r\nFrom :Someone@somewhere\r\n\r\nBody";
+
+    #[tokio::test]
+    async fn get_first_header() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        k9::assert_equal!(
+            msg.get_first_named_header_value("X-header")
+                .await
+                .unwrap()
+                .unwrap(),
+            "value"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_all_header() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        k9::assert_equal!(
+            msg.get_all_named_header_values("X-header").await.unwrap(),
+            vec!["value".to_string(), "another value".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_first() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        msg.remove_first_named_header("X-header").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "X-Hello: there\r\nSubject: Hello\r\nX-Header: another value\r\nFrom :Someone@somewhere\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_all() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        msg.remove_all_named_headers("X-header").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "X-Hello: there\r\nSubject: Hello\r\nFrom :Someone@somewhere\r\n\r\nBody"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_text_plain() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        msg.append_text_plain("I am at the bottom").await.unwrap();
+        k9::assert_equal!(
+            data_as_string(&msg),
+            "X-Hello: there\r\n\
+             X-Header: value\r\n\
+             Subject: Hello\r\n\
+             X-Header: another value\r\n\
+             From :Someone@somewhere\r\n\
+             Content-Type: text/plain;\r\n\
+             \tcharset=\"us-ascii\"\r\n\
+             \r\n\
+             Body\r\n\
+             I am at the bottom\r\n"
+        );
+    }
+
+    const MIXED_CONTENT: &str = "Content-Type: multipart/mixed;\r\n\
+\tboundary=\"my-boundary\"\r\n\
+\r\n\
+--my-boundary\r\n\
+Content-Type: text/plain;\r\n\
+\tcharset=\"us-ascii\"\r\n\
+\r\n\
+plain text\r\n\
+--my-boundary\r\n\
+Content-Type: text/html;\r\n\
+\tcharset=\"us-ascii\"\r\n\
+\r\n\
+<b>rich</b> text\r\n\
+--my-boundary\r\n\
+Content-Type: application/octet-stream\r\n\
+Content-Transfer-Encoding: base64\r\n\
+Content-Disposition: attachment;\r\n\
+\tfilename=\"woot.bin\"\r\n\
+Content-ID: <woot.id@somewhere>\r\n\
+\r\n\
+AAECAw==\r\n\
+--my-boundary--\r\n\
+\r\n";
+
+    const MIXED_CONTENT_ENCLOSING_BODY: &str = "Content-Type: multipart/mixed;\r\n\
+\tboundary=\"my-boundary\"\r\n\
+\r\n\
+--my-boundary\r\n\
+Content-Type: text/plain;\r\n\
+\tcharset=\"us-ascii\"\r\n\
+\r\n\
+plain text\r\n\
+--my-boundary\r\n\
+Content-Type: text/html;\r\n\
+\tcharset=\"us-ascii\"\r\n\
+\r\n\
+<BODY>\r\n\
+<b>rich</b> text\r\n\
+</BODY>\r\n\
+--my-boundary\r\n\
+Content-Type: application/octet-stream\r\n\
+Content-Transfer-Encoding: base64\r\n\
+Content-Disposition: attachment;\r\n\
+\tfilename=\"woot.bin\"\r\n\
+Content-ID: <woot.id>\r\n\
+\r\n\
+AAECAw==\r\n\
+--my-boundary--\r\n\
+\r\n";
+
+    #[tokio::test]
+    async fn append_text_html() {
+        let msg = new_msg_body(MIXED_CONTENT);
+        msg.append_text_html("bottom html").await.unwrap();
+        k9::snapshot!(
+            data_as_string(&msg),
+            r#"
+Content-Type: multipart/mixed;\r
+\tboundary="my-boundary"\r
+\r
+--my-boundary\r
+Content-Type: text/plain;\r
+\tcharset="us-ascii"\r
+\r
+plain text\r
+--my-boundary\r
+Content-Type: text/html;\r
+\tcharset="us-ascii"\r
+\r
+<b>rich</b> text\r
+\r
+bottom html\r
+--my-boundary\r
+Content-Type: application/octet-stream\r
+Content-Transfer-Encoding: base64\r
+Content-Disposition: attachment;\r
+\tfilename="woot.bin"\r
+Content-ID: <woot.id@somewhere>\r
+\r
+AAECAw==\r
+--my-boundary--\r
+\r
+
+"#
+        );
+
+        let msg = new_msg_body(MIXED_CONTENT_ENCLOSING_BODY);
+        msg.append_text_html("bottom html 👻").await.unwrap();
+        k9::snapshot!(
+            data_as_string(&msg),
+            r#"
+Content-Type: multipart/mixed;\r
+\tboundary="my-boundary"\r
+\r
+--my-boundary\r
+Content-Type: text/plain;\r
+\tcharset="us-ascii"\r
+\r
+plain text\r
+--my-boundary\r
+Content-Type: text/html;\r
+\tcharset="utf-8"\r
+Content-Transfer-Encoding: quoted-printable\r
+\r
+<BODY>\r
+<b>rich</b> text\r
+\r
+bottom html =F0=9F=91=BB</BODY>\r
+--my-boundary\r
+Content-Type: application/octet-stream\r
+Content-Transfer-Encoding: base64\r
+Content-Disposition: attachment;\r
+\tfilename="woot.bin"\r
+Content-ID: <woot.id>\r
+\r
+AAECAw==\r
+--my-boundary--\r
+\r
+
+"#
+        );
+    }
+
+    #[tokio::test]
+    async fn append_text_plain_mixed() {
+        let msg = new_msg_body(MIXED_CONTENT);
+        msg.append_text_plain("bottom text 👾").await.unwrap();
+        k9::snapshot!(
+            data_as_string(&msg),
+            r#"
+Content-Type: multipart/mixed;\r
+\tboundary="my-boundary"\r
+\r
+--my-boundary\r
+Content-Type: text/plain;\r
+\tcharset="utf-8"\r
+Content-Transfer-Encoding: quoted-printable\r
+\r
+plain text\r
+\r
+bottom text =F0=9F=91=BE\r
+--my-boundary\r
+Content-Type: text/html;\r
+\tcharset="us-ascii"\r
+\r
+<b>rich</b> text\r
+--my-boundary\r
+Content-Type: application/octet-stream\r
+Content-Transfer-Encoding: base64\r
+Content-Disposition: attachment;\r
+\tfilename="woot.bin"\r
+Content-ID: <woot.id@somewhere>\r
+\r
+AAECAw==\r
+--my-boundary--\r
+\r
+
+"#
+        );
+    }
+
+    #[tokio::test]
+    async fn check_conformance_angle_msg_id() {
+        const DOUBLE_ANGLE_ONLY: &str = "Subject: hello\r
+Message-ID: <<1234@example.com>>\r
+\r
+Hello";
+        let msg = new_msg_body(DOUBLE_ANGLE_ONLY);
+        k9::snapshot!(
+            msg.check_fix_conformance(
+                MessageConformance::MISSING_MESSAGE_ID_HEADER,
+                MessageConformance::empty(),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+            "Message has conformance issues: MISSING_MESSAGE_ID_HEADER"
+        );
+
+        msg.check_fix_conformance(
+            MessageConformance::MISSING_MESSAGE_ID_HEADER,
+            MessageConformance::MISSING_MESSAGE_ID_HEADER,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Can't use a snapshot test here because the fixed header
+        // has a unique random component
+        /*
+                k9::snapshot!(
+                    data_as_string(&msg),
+                    r#"
+        Subject: hello\r
+        Message-ID: <4106566d2ce911ef9dcd0242289ea0df@example.com>\r
+        \r
+        Hello
+        "#
+                );
+        */
+
+        const DOUBLE_ANGLE_AND_LONG_LINE: &str = "Subject: hello\r
+Message-ID: <<1234@example.com>>\r
+\r
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line \
+Hello this is a really long line Hello this is a really long line
+";
+        let msg = new_msg_body(DOUBLE_ANGLE_AND_LONG_LINE);
+        msg.check_fix_conformance(
+            MessageConformance::MISSING_COLON_VALUE,
+            MessageConformance::MISSING_MESSAGE_ID_HEADER | MessageConformance::LINE_TOO_LONG,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Can't use a snapshot test here because the fixed header
+        // has a random component
+        /*
+                k9::snapshot!(
+                    data_as_string(&msg),
+                    r#"
+        Content-Type: text/plain;\r
+        \tcharset="us-ascii"\r
+        Content-Transfer-Encoding: quoted-printable\r
+        Subject: hello\r
+        Message-ID: <749fc87e2cea11ef96a50242289ea0df@example.com>\r
+        \r
+        Hello this is a really long line Hello this is a really long line Hello thi=\r
+        s is a really long line Hello this is a really long line Hello this is a re=\r
+        ally long line Hello this is a really long line Hello this is a really long=\r
+         line Hello this is a really long line Hello this is a really long line Hel=\r
+        lo this is a really long line Hello this is a really long line Hello this i=\r
+        s a really long line Hello this is a really long line Hello this is a reall=\r
+        y long line=0A\r
+
+        "#
+                );
+        */
+    }
+
+    #[tokio::test]
+    async fn check_conformance() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        msg.check_fix_conformance(
+            MessageConformance::default(),
+            MessageConformance::MISSING_MIME_VERSION,
+            None,
+        )
+        .await
+        .unwrap();
+        k9::snapshot!(
+            data_as_string(&msg),
+            r#"
+X-Hello: there\r
+X-Header: value\r
+Subject: Hello\r
+X-Header: another value\r
+From :Someone@somewhere\r
+MIME-Version: 1.0\r
+\r
+Body
+"#
+        );
+
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        msg.check_fix_conformance(
+            MessageConformance::default(),
+            MessageConformance::MISSING_MIME_VERSION | MessageConformance::NAME_ENDS_WITH_SPACE,
+            None,
+        )
+        .await
+        .unwrap();
+        k9::snapshot!(
+            data_as_string(&msg),
+            r#"
+Content-Type: text/plain;\r
+\tcharset="us-ascii"\r
+X-Hello: there\r
+X-Header: value\r
+Subject: Hello\r
+X-Header: another value\r
+From: <Someone@somewhere>\r
+MIME-Version: 1.0\r
+\r
+Body\r
+
+"#
+        );
+    }
+
+    #[tokio::test]
+    async fn check_fix_latin_input() {
+        const POUNDS: &[u8] = b"Subject: \xa3\r\n\r\nGBP\r\n";
+        let msg = new_msg_body(&*POUNDS);
+        msg.check_fix_conformance(
+            MessageConformance::default(),
+            MessageConformance::NEEDS_TRANSFER_ENCODING,
+            Some(&CheckFixSettings {
+                detect_encoding: true,
+                include_encodings: vec!["iso-8859-1".to_string()],
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let subject = msg
+            .get_first_named_header_value("subject")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(subject, "£");
+    }
+
+    #[tokio::test]
+    async fn set_scheduling() -> anyhow::Result<()> {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        assert!(msg.get_due().is_none(), "due is implicitly now");
+
+        let now = Utc::now();
+        let one_day = chrono::Duration::try_days(1).expect("1 day to be valid");
+
+        msg.set_scheduling(Some(Scheduling {
+            restriction: None,
+            first_attempt: Some((now + one_day).into()),
+            expires: None,
+        }))
+        .await?;
+
+        let due = msg.get_due().expect("due to now be set");
+        assert!(due - now >= one_day, "due time is at least 1 day away");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delay_by_out_of_range_errors() {
+        let msg = new_msg_body(MULTI_HEADER_CONTENT);
+        let max = chrono::Duration::MAX;
+        let err = msg.delay_by(max).await.unwrap_err();
+        k9::assert_equal!(
+            err.to_string(),
+            "due time out of range: now + PT9223372036854775.807S"
+        );
+        // The jitter addition must not panic either. Jitter is 0 to 59 random
+        // seconds. At 0 the duration stays at Duration::MAX and the overflow
+        // instead comes from adding it to now, giving the other message.
+        let err = msg.delay_by_and_jitter(max).await.unwrap_err().to_string();
+        assert!(
+            err == "due time out of range: duration + jitter"
+                || err == "due time out of range: now + PT9223372036854775.807S",
+            "unexpected error: {err}"
+        );
+        k9::assert_equal!(msg.get_due(), None);
+    }
+
+    #[cfg(all(test, target_pointer_width = "64"))]
+    #[test]
+    fn sizes() {
+        assert_eq!(std::mem::size_of::<Message>(), 8);
+        assert_eq!(std::mem::size_of::<MessageInner>(), 32);
+        assert_eq!(std::mem::size_of::<MessageWithId>(), 72);
+    }
+}

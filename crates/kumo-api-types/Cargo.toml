@@ -1,0 +1,52 @@
+[package]
+name = "kumo-api-types"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["lua"]
+lua = ["dep:config", "dep:mlua", "dep:reqwest", "dep:kumo-http-client"]
+
+[dependencies]
+anyhow = {workspace=true}
+chrono = {workspace=true, default-features=false, features=["serde"]}
+cidr-map = {path="../cidr-map", default-features=false}
+config = {path="../config", optional=true}
+data-encoding = {workspace=true}
+data-loader = {path="../data-loader", default-features=false}
+dns-resolver = {path="../dns-resolver"}
+mailexchanger = {path="../mailexchanger"}
+duration-serde = {path="../duration-serde"}
+fancy-regex = {workspace=true}
+futures-util = {workspace=true}
+kumo-http-client = {path="../kumo-http-client", optional=true}
+kumo-log-types = {path="../kumo-log-types"}
+mlua = {workspace=true, features=["vendored", "lua54", "async", "send", "serialize"], optional=true}
+mod-memoize = {path="../mod-memoize"}
+reqwest = {workspace=true, default-features=false, features=["json", "rustls-tls"], optional=true}
+rfc5321 = {path="../rfc5321", default-features=false}
+rustls = {workspace=true}
+openssl = {workspace=true}
+ordermap = {workspace=true}
+serde = {workspace=true}
+serde_json = {workspace=true}
+serde_path_to_error = {workspace=true}
+serde_with = {workspace=true}
+sha2 = {workspace=true}
+toml = {workspace=true, features=["preserve_order"]}
+tracing = {workspace=true}
+tokio = {workspace=true}
+spool = {path="../spool"}
+throttle = {path="../throttle", default-features=false}
+url = {workspace=true}
+utoipa = {workspace=true}
+uuid = {workspace=true, features=["serde"]}
+
+[dev-dependencies]
+k9 = {workspace=true}
+mod-serde = {path="../mod-serde"}
+tempfile.workspace = true
+tokio = {workspace=true, features=["full"]}
+
+[lints]
+workspace = true

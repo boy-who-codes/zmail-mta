@@ -1,0 +1,41 @@
+["default"]
+enable_tls = "OpportunisticInsecure"
+
+[["default".automation]]
+regex = "you said 450-go-away"
+action = ["Suspend", {SetConfig={name="max_message_rate", value="3/m"}}, {SetConfig={name="max_deliveries_per_connection", value=1}}]
+duration = "1 hour"
+
+[["default".automation]]
+regex = "you said 450-suspend-campaign"
+action = "SuspendCampaign"
+duration = "1 hour"
+
+[["default".automation]]
+regex = "you said 450-suspend-tenant"
+action = "SuspendTenant"
+duration = "1 hour"
+
+[["default".automation]]
+regex = "you said 550-go-away"
+action = "Bounce"
+duration = "1 hour"
+
+[["default".automation]]
+regex = "you said 550-bounce-campaign"
+action = "BounceCampaign"
+duration = "1 hour"
+
+[["default".automation]]
+regex = "you said 550-bounce-tenant"
+action = "BounceTenant"
+duration = "1 hour"
+
+["delivery.mx-sink.wezfurlong.org"]
+mx_rollup = false
+enable_tls = "OpportunisticInsecure"
+
+[["delivery.mx-sink.wezfurlong.org".automation]]
+regex = "OK ids="
+action = "Suspend"
+duration = "1 hour"
