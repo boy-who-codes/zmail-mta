@@ -72,8 +72,8 @@ Inside this app, you have 4 dedicated tabs:
 | **Sending Domains & DNS** | **YES (100% Dynamic)** | `DnsDomainsApp.tsx` | Add domains, live DNS verification (SPF/DKIM/DMARC/PTR), 1-click RSA DKIM generation, 1-click Cloudflare DNS sync. |
 | **IP Pools & Dedicated IPs** | **YES (100% Dynamic)** | `IpPoolsApp.tsx` | Add/remove IPs, create pools, assign weights; writes directly to `sources.toml` for live MTA IP rotation. |
 | **IP Warmup Automation** | **YES (100% Dynamic)** | `IpPoolsApp.tsx` | Automated daily target escalation plans (e.g. 50/day to 10k/day), pause, resume, manual stage advancement. |
-| **MTA Queue Management** | **YES (100% Dynamic)** | `KumoMtaApp.tsx` | Live queue depth by destination ISP (`gmail.com`, `outlook.com`), real-time actions: **Flush Now**, **Pause**, **Resume**, **Purge**. |
-| **Traffic Shaping Rate Limits** | **YES (100% Dynamic)** | `KumoMtaApp.tsx` | Set max connection rate, message rate, connection limits per destination domain; auto-generates policy. |
+| **MTA Queue Management** | **YES (100% Dynamic)** | `MtaStatusApp.tsx` | Live queue depth by destination ISP (`gmail.com`, `outlook.com`), real-time actions: **Flush Now**, **Pause**, **Resume**, **Purge**. |
+| **Traffic Shaping Rate Limits** | **YES (100% Dynamic)** | `MtaStatusApp.tsx` | Set max connection rate, message rate, connection limits per destination domain; auto-generates policy. |
 | **Suppression & Blacklist** | **YES (100% Dynamic)** | `SuppressionApp.tsx` | Add/delete emails or wildcard `@domain.com`, reasons (hard bounce, complaint, unsubscribe); enforced at pre-send. |
 | **SMTP Relay Whitelist** | **YES (100% Dynamic)** | `SmtpConnectApp.tsx` | Add/remove authorized CIDR ranges (`192.168.1.0/24`) for passwordless relay access. |
 | **Email Template Builder** | **YES (100% Dynamic)** | `TemplatesApp.tsx` | HTML/Text editor with live responsive preview, variable chips, and tag categorization. |
@@ -82,7 +82,7 @@ Inside this app, you have 4 dedicated tabs:
 | **Webhooks & Event Streams** | **YES (100% Dynamic)** | `WebhooksApp.tsx` | Register webhook URLs, secret HMAC keys, subscribe to 9 event types (`delivered`, `bounced`, `opened`, etc.). |
 | **Inbound Mail & ARF Loops** | **YES (100% Dynamic)** | `InboundApp.tsx` | Set up inbound routes, parse incoming MIME emails, test RFC 5965 ARF spam complaint processing. |
 | **MTA Inbound Listeners** | **Infrastructure (Hardcoded)** | `docker-compose.yml`, `init.lua` | Public listener ports: Port 25, 2525, 8000. Bound at container startup. |
-| **Spool Storage Engine** | **Infrastructure (Hardcoded)** | `init.lua` | Uses high-performance RocksDB spooling located at `/var/spool/kumomta/data` and `/var/spool/kumomta/meta`. |
+| **Spool Storage Engine** | **Infrastructure (Hardcoded)** | `init.lua` | Uses high-performance RocksDB spooling located at `/var/spool/mta/data` and `/var/spool/mta/meta`. |
 | **Redis Cache Connection** | **Infrastructure (Config)** | `docker-compose.yml` (`REDIS_URL`) | Connects to `redis:6379` for cluster state and rate caching. |
 | **Mailbox Rotation (Cold Outbound)**| **Not Implemented** | Dispatcher logic | Senders are selected per campaign or per compose email, not automatically rotated per lead. |
 
@@ -95,7 +95,7 @@ Inside this app, you have 4 dedicated tabs:
 #### 1. `backend/cmd/server/main.go`
 - **Role**: Backend entry point and microservice bootstrapper.
 - **What it does**:
-  - Initializes configuration from environment variables (`PORT`, `REDIS_URL`, `KUMO_API`, `KUMO_SMTP`).
+  - Initializes configuration from environment variables (`PORT`, `REDIS_URL`, `MTA_API`, `MTA_SMTP`).
   - Initializes the high-performance memory-mapped JSON/Redis state store (`store.NewStore`).
   - Spawns background workers for automated IP warmup schedules and worker pools.
   - Starts the HTTP REST API router on port `8080`.
@@ -126,7 +126,7 @@ Inside this app, you have 4 dedicated tabs:
 - **Role**: Core state store, persistence engine, and business logic coordinator (over 4,100 lines).
 - **What it does**:
   - Thread-safe in-memory store protected by `sync.RWMutex` with persistent snapshot serialization to `data/mailops-state.json`.
-  - **`DispatchCampaign`**: Resolves campaign recipients, applies Handlebars dynamic token merging (`{{first_name}}`, `{{company}}`), checks the suppression engine circuit breaker, generates personalized RFC 5322 MIME messages, and injects them directly into KumoMTA's ESMTP socket.
+  - **`DispatchCampaign`**: Resolves campaign recipients, applies Handlebars dynamic token merging (`{{first_name}}`, `{{company}}`), checks the suppression engine circuit breaker, generates personalized RFC 5322 MIME messages, and injects them directly into Core MTA's ESMTP socket.
   - **`syncSourcesTomlLocked`**: Whenever IPs or IP Pools are added/modified in the UI, this function rewrites `policy/sources.toml` with the exact IP addresses, pool associations, and weights, dynamically enabling live IP rotation.
   - **`syncSuppressionJsonLocked`**: Writes active suppressed emails and wildcard domains to `policy/suppressions.json` for microsecond pre-send rejection by the MTA Lua policy.
   - **`AddDomainWithDNS`**: Automatically generates 1024/2048-bit RSA DKIM key pairs, computes the SPF record, DMARC record, and MX record.
@@ -195,7 +195,7 @@ Inside this app, you have 4 dedicated tabs:
     - Card 4: Schedule settings (Send Immediately vs Scheduled).
   - **🔄 Automated Sequence Workflows**: Seamlessly embeds the interactive Visual DAG Studio directly inside the window so operators can build multi-step drip automations without switching apps.
 
-#### 2. `web/src/components/apps/KumoMtaApp.tsx` (MTA Status)
+#### 2. `web/src/components/apps/MtaStatusApp.tsx` (MTA Status)
 - **Role**: Real-time MTA Cluster Controller and Queue Inspector.
 - **Features**:
   - **Tab 1: Cluster Nodes**: Live CPU load %, RocksDB spool disk capacity (GB used vs total), active queue depth, and host IP.
@@ -295,8 +295,8 @@ Inside this app, you have 4 dedicated tabs:
 #### 1. `deploy/docker/docker-compose.yml`
 - **Role**: Multi-container production deployment definition.
 - **Services**:
-  1. `kumomta`: High-speed outbound and inbound MTA daemon (`ghcr.io/kumocorp/kumomta:latest`). Exposes ports 25, 2525, 8000.
-  2. `kumo-tsa`: Traffic Shaping Automation daemon reading `shaping.toml`.
+  1. `mta`: High-speed outbound and inbound MTA daemon (`mailops/mta-core:latest`). Exposes ports 25, 2525, 8000.
+  2. `traffic-shaper`: Traffic Shaping Automation daemon reading `shaping.toml`.
   3. `redis`: Redis 7 alpine on port 6379 for cluster caching and pub/sub.
   4. `backend`: Go control plane REST API on port 8080.
   5. `web`: Next.js desktop web application on port 3000.
@@ -305,10 +305,10 @@ Inside this app, you have 4 dedicated tabs:
 - **Role**: Core MTA policy script executed by the MTA engine.
 - **What it does**:
   - Starts the ESMTP listener on `0.0.0.0:2525` and HTTP API on `0.0.0.0:8000`.
-  - Configures **RocksDB** persistent message spooling at `/var/spool/kumomta`.
+  - Configures **RocksDB** persistent message spooling at `/var/spool/mta`.
   - Mounts `sources.toml` for multi-IP egress pools and weighted IP rotation.
   - Mounts `suppressions.json` for microsecond pre-send circuit breaker rejection.
-  - Connects to the Traffic Shaping Automation daemon (`kumo-tsa:8008`).
+  - Connects to the Traffic Shaping Automation daemon (`traffic-shaper:8008`).
 
 #### 3. `deploy/docker/policy/shaping.toml`
 - **Role**: ISP-specific delivery and throttle rules.
@@ -342,7 +342,7 @@ Inside this app, you have 4 dedicated tabs:
        │
        ▼
 3. SPOOLING & QUEUE SCHEDULING (RocksDB)
-   - Message persisted to /var/spool/kumomta/data and /meta
+   - Message persisted to /var/spool/mta/data and /meta
    - Destination MX records resolved via DNS
        │
        ▼

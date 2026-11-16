@@ -8,7 +8,7 @@ This dictionary defines the standard customer-facing language for MAILOPS. All u
 
 | Avoid (Technical / Internal Jargon) | Use (Customer-Facing Business Language) | Why |
 | :--- | :--- | :--- |
-| KumoMTA Delivery Server / Spool Engine | **Mail Server & Delivery Queues** | Customers think in terms of sending email and outgoing queues. |
+| ZMAIL Core MTA Delivery Server / Spool Engine | **Mail Server & Delivery Queues** | Customers think in terms of sending email and outgoing queues. |
 | Double Ledger | **Sending & Delivery Records** | Plain accounting of what was sent vs. confirmed. |
 | Execution Engine / Delivery Pipeline | **Sending Process / Workflow** | Focuses on the action rather than internal workers. |
 | Idempotency / Deduplication Engine | **Duplicate Protection** | Clear benefit: prevents sending the same message twice. |
@@ -60,4 +60,4 @@ This dictionary defines the standard customer-facing language for MAILOPS. All u
 Always lead with plain language summary, and offer technical details when the user asks for them:
 
 * **Primary Summary:** "Delivery delayed by recipient server (Google Workspace)."
-* **Technical Details (Expandable):** `SMTP 451 4.7.0 Rate limit exceeded. KumoMTA will retry in 180 seconds.`
+* **Technical Details (Expandable):** `SMTP 451 4.7.0 Rate limit exceeded. ZMAIL Core MTA will retry in 180 seconds.`

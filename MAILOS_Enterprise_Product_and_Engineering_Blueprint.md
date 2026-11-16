@@ -4,7 +4,7 @@
 
 **Product name:** MAILOS\
 **Category:** Self-hosted / managed email infrastructure control plane\
-**Delivery engine:** KumoMTA\
+**Delivery engine:** ZMAIL Core MTA\
 **Primary languages:** Go, Rust, TypeScript\
 **Web application:** Next.js\
 **Deployment foundation:** Linux + Docker\
@@ -23,15 +23,15 @@ provides a unified application for deploying, configuring, operating,
 monitoring, securing and analysing real email delivery infrastructure.
 
 MAILOS is not merely an SMTP relay, campaign sender or dashboard placed
-over KumoMTA. It is a control plane that manages real Linux hosts,
-Docker workloads, KumoMTA nodes, sending domains, DNS records, IP
+over ZMAIL Core MTA. It is a control plane that manages real Linux hosts,
+Docker workloads, ZMAIL Core MTA nodes, sending domains, DNS records, IP
 addresses, queues, delivery policies, reputation signals, message
 events, analytics, customer access and infrastructure lifecycle
 operations.
 
 The product must expose meaningful controls over the underlying system.
 When an operator restarts a node, changes an egress IP assignment,
-updates a KumoMTA policy, verifies DNS, drains a queue or changes a rate
+updates a ZMAIL Core MTA policy, verifies DNS, drains a queue or changes a rate
 limit, MAILOS must perform the corresponding operation against the
 actual infrastructure, verify the result and show the observed state.
 
@@ -43,7 +43,7 @@ actual infrastructure, verify the result and show the observed state.
 2.  **Observed state is authoritative.** A submitted command is not a
     successful operation. Success is shown only after the target system
     confirms the intended state.
-3.  **KumoMTA owns delivery.** MAILOS orchestrates and observes
+3.  **ZMAIL Core MTA owns delivery.** MAILOS orchestrates and observes
     delivery; it does not implement a competing SMTP delivery engine.
 4.  **Linux is a first-class resource.** Hosts, interfaces, storage,
     processes, containers, firewall state, resource usage and service
@@ -74,7 +74,7 @@ management.
 
 Included: - SMTP delivery infrastructure. - SMTP submission and HTTP
 message APIs. - Domain and DNS authentication. - Sending IP and pool
-management. - KumoMTA nodes, queues, policies and traffic shaping. -
+management. - ZMAIL Core MTA nodes, queues, policies and traffic shaping. -
 Delivery events and analytics. - Warmup and reputation monitoring. -
 Sandbox and testing. - Campaigns and mail merge. - Suppression, consent
 and compliance operations. - Infrastructure observability and
@@ -99,7 +99,7 @@ their implementation blindly.
   -----------------------------------------------------------------------
   Reference product       Product ideas to borrow MAILOS implementation
   ----------------------- ----------------------- -----------------------
-  KumoMTA                 High-performance MTA,   Primary delivery engine
+  ZMAIL Core MTA                 High-performance MTA,   Primary delivery engine
                           queues, egress paths,   managed by MAILOS
                           Lua policies, traffic   
                           shaping, TSA, message   
@@ -153,7 +153,7 @@ their implementation blindly.
 
 ## 2.1 What not to copy
 
--   Do not recreate KumoMTA's delivery engine.
+-   Do not recreate ZMAIL Core MTA's delivery engine.
 -   Do not build a second message spool in Redis, PostgreSQL or
     RabbitMQ.
 -   Do not use IP rotation to bypass spam filters, provider limits or
@@ -181,13 +181,13 @@ configuration, billing/usage, workflows and orchestration.
 
 ### B. Infrastructure plane
 
-Responsible for Linux hosts, Docker, KumoMTA nodes, network interfaces,
+Responsible for Linux hosts, Docker, ZMAIL Core MTA nodes, network interfaces,
 storage, firewall, certificates, process health and deployment
 lifecycle.
 
 ### C. Delivery plane
 
-KumoMTA performs SMTP delivery, queue management, retries, routing, DKIM
+ZMAIL Core MTA performs SMTP delivery, queue management, retries, routing, DKIM
 signing, egress path selection and traffic shaping.
 
 ### D. Data and intelligence plane
@@ -211,8 +211,8 @@ flowchart TB
 
     AGENT["Go MAILOS Node Agent"]
     DOCKER["Docker Engine"]
-    KUMO["KumoMTA Nodes"]
-    TSA["Kumo Traffic Shaping Automation"]
+    MTA["ZMAIL Core MTA Nodes"]
+    TSA["Native Traffic Shaping Automation"]
     HOST["Linux Host: Network / Storage / CPU / Firewall"]
 
     INGEST["Rust Event Ingestion"]
@@ -230,11 +230,11 @@ flowchart TB
     API --> BROKER
     CONFIG --> AGENT
     AGENT --> DOCKER
-    DOCKER --> KUMO
+    DOCKER --> MTA
     AGENT --> HOST
-    KUMO --> TSA
-    KUMO --> INGEST
-    KUMO --> TRACK
+    MTA --> TSA
+    MTA --> INGEST
+    MTA --> TRACK
     INGEST --> BROKER
     BROKER --> ANALYTICS
     ANALYTICS --> B2
@@ -274,11 +274,11 @@ flowchart TB
                                                   integrations and
                                                   verification
 
-  Configuration manager   Go                      Kumo configuration
+  Configuration manager   Go                      MTA configuration
                                                   generation, validation,
                                                   versioning and rollout
 
-  KumoMTA                 KumoMTA + Lua           SMTP delivery and
+  ZMAIL Core MTA                 ZMAIL Core MTA + Lua           SMTP delivery and
                                                   delivery lifecycle
 
   Analytics               ClickHouse              High-volume analytical
@@ -351,7 +351,7 @@ lookup tables. - Small idempotency or routing metadata datasets, where
 consistency requirements are understood.
 
 D1 must not become the authoritative store for: - High-volume delivery
-events. - KumoMTA message spool. - Large message bodies or
+events. - ZMAIL Core MTA message spool. - Large message bodies or
 attachments. - High-write queue state. - Large analytical datasets. -
 Core transactional workflows that require PostgreSQL's relational and
 operational capabilities.
@@ -494,8 +494,8 @@ control plane over authenticated TLS/mTLS and reports observed state.
 -   Inspect firewall state.
 -   Apply approved firewall changes with safeguards.
 -   Install or renew approved certificates.
--   Deploy versioned KumoMTA configuration.
--   Run documented KumoMTA health and diagnostic operations.
+-   Deploy versioned ZMAIL Core MTA configuration.
+-   Run documented ZMAIL Core MTA health and diagnostic operations.
 
 ### Security requirements
 
@@ -531,7 +531,7 @@ API, then verified against observed container state.
 
 IP management must distinguish: 1. IP exists in MAILOS inventory. 2. IP
 is assigned to a node. 3. IP is configured on a Linux interface. 4. IP
-is routable and usable. 5. IP is selected by KumoMTA egress
+is routable and usable. 5. IP is selected by ZMAIL Core MTA egress
 configuration. 6. IP has verified PTR/rDNS and appropriate forward
 mapping.
 
@@ -554,12 +554,12 @@ operation.
 
 ------------------------------------------------------------------------
 
-# 6. KumoMTA integration
+# 6. ZMAIL Core MTA integration
 
-KumoMTA is the delivery engine. MAILOS manages it through supported
+ZMAIL Core MTA is the delivery engine. MAILOS manages it through supported
 interfaces and versioned configuration.
 
-## 6.1 KumoMTA responsibilities
+## 6.1 ZMAIL Core MTA responsibilities
 
 -   SMTP delivery.
 -   SMTP listeners and message injection.
@@ -577,7 +577,7 @@ interfaces and versioned configuration.
 ## 6.2 MAILOS responsibilities
 
 -   Node and cluster lifecycle.
--   KumoMTA deployment.
+-   ZMAIL Core MTA deployment.
 -   Configuration generation and versioning.
 -   Configuration validation.
 -   Policy templates and safe overrides.
@@ -591,7 +591,7 @@ interfaces and versioned configuration.
 
 ## 6.3 Configuration management lifecycle
 
-Never edit the live KumoMTA configuration directly from a browser
+Never edit the live ZMAIL Core MTA configuration directly from a browser
 request.
 
 1.  Operator changes a setting.
@@ -599,7 +599,7 @@ request.
 3.  Configuration manager creates a proposed revision.
 4.  Generator renders the required Lua/TOML/config files.
 5.  Static validation runs.
-6.  KumoMTA-specific validation runs where supported.
+6.  ZMAIL Core MTA-specific validation runs where supported.
 7.  Diff is shown to the operator.
 8.  Revision is stored immutably.
 9.  Approved deployment is sent to the node agent.
@@ -615,7 +615,7 @@ Per-node deployment status. - Staged rollout. - Canary node. -
 Rollback. - Configuration drift detection. - Desired state versus
 observed state.
 
-## 6.4 KumoMTA management screens
+## 6.4 ZMAIL Core MTA management screens
 
 -   MTA overview.
 -   Nodes and clusters.
@@ -631,7 +631,7 @@ observed state.
 -   Runtime diagnostics.
 -   Logs and SMTP responses.
 
-Use supported KumoMTA APIs, documented CLI operations, configuration
+Use supported ZMAIL Core MTA APIs, documented CLI operations, configuration
 interfaces and structured logs. Do not rely on scraping undocumented
 internal state.
 
@@ -890,7 +890,7 @@ compliance.
 
 ### Purpose
 
-Expose real KumoMTA queue and message lifecycle operations.
+Expose real ZMAIL Core MTA queue and message lifecycle operations.
 
 ### Features
 
@@ -927,7 +927,7 @@ Expose real KumoMTA queue and message lifecycle operations.
 
 ### Screen behaviour
 
--   Queue counts come from KumoMTA's supported operational interfaces
+-   Queue counts come from ZMAIL Core MTA's supported operational interfaces
     and are timestamped.
 -   Search supports message ID, recipient/domain where permitted,
     tenant, campaign, time and result.
@@ -963,7 +963,7 @@ Manage safe delivery throughput and provider-specific policy.
 -   Queue priority.
 -   Retry policy.
 -   Deferral handling.
--   KumoMTA TSA integration.
+-   ZMAIL Core MTA TSA integration.
 -   Policy versioning.
 -   Policy simulation/validation.
 -   Policy history.
@@ -1231,7 +1231,7 @@ workflows.
 -   Unsubscribe and complaint events update suppression state before
     later sends.
 -   Campaign cancellation stops future submission while accurately
-    reporting messages already accepted by KumoMTA.
+    reporting messages already accepted by ZMAIL Core MTA.
 -   Transactional and marketing traffic are separated by policy and
     access controls.
 
@@ -1336,7 +1336,7 @@ Expose infrastructure and delivery health with actionable diagnostics.
 
 -   Host health.
 -   Docker health.
--   KumoMTA health.
+-   ZMAIL Core MTA health.
 -   Queue depth.
 -   Queue age.
 -   Spool capacity.
@@ -1360,7 +1360,7 @@ Expose infrastructure and delivery health with actionable diagnostics.
 1.  Monitoring Overview.
 2.  Service Health.
 3.  Host Metrics.
-4.  KumoMTA Metrics.
+4.  ZMAIL Core MTA Metrics.
 5.  Queue Monitoring.
 6.  Event Pipeline.
 7.  Database Monitoring.
@@ -1493,7 +1493,7 @@ operations.
 
 -   PostgreSQL backup.
 -   ClickHouse backup/snapshot.
--   KumoMTA configuration backup.
+-   ZMAIL Core MTA configuration backup.
 -   Spool recovery plan.
 -   Object storage archive verification.
 -   Encryption key backup policy.
@@ -1705,7 +1705,7 @@ The Home screen is an operational summary, not a replacement for module
 screens.
 
 It should show: - Overall platform health. - Active nodes and unhealthy
-nodes. - KumoMTA cluster health. - Current queue backlog. - Recent
+nodes. - ZMAIL Core MTA cluster health. - Current queue backlog. - Recent
 delivery throughput. - Event ingestion freshness. - Active incidents and
 alerts. - Domains requiring attention. - IPs under quarantine. - Recent
 configuration deployments. - Recent operator actions. - Long-running
@@ -1838,8 +1838,8 @@ from API callers.
 
 ## 10.1 Event sources
 
--   KumoMTA structured logs and supported event outputs.
--   KumoMTA operational APIs.
+-   ZMAIL Core MTA structured logs and supported event outputs.
+-   ZMAIL Core MTA operational APIs.
 -   Node Agent telemetry.
 -   Docker events and metrics.
 -   DNS verification workers.
@@ -1935,7 +1935,7 @@ restore.completed
 -   Redis availability strategy.
 -   RabbitMQ quorum queues where appropriate.
 -   ClickHouse replication and backup strategy.
--   Multiple KumoMTA nodes.
+-   Multiple ZMAIL Core MTA nodes.
 -   Independent persistent spool per MTA node.
 -   Agent reconnect and command reconciliation.
 -   Durable event buffering.
@@ -1950,13 +1950,13 @@ restore.completed
   ----------------------------------- -----------------------------------
   Dashboard unavailable               Existing MTA delivery continues
 
-  Control plane unavailable           Existing KumoMTA configuration and
+  Control plane unavailable           Existing ZMAIL Core MTA configuration and
                                       queues remain operational
 
   Node agent disconnected             Show stale state; do not claim
                                       operations succeeded
 
-  KumoMTA node unhealthy              Mark node unhealthy and execute
+  ZMAIL Core MTA node unhealthy              Mark node unhealthy and execute
                                       configured failover/drain policy
 
   PostgreSQL unavailable              Block unsafe configuration
@@ -2085,20 +2085,20 @@ behaviour, not just whether components render.
 -   B2/R2 archive writes and reads.
 -   Cloudflare DNS integration.
 -   Docker agent operations.
--   KumoMTA message injection.
--   KumoMTA configuration deployment.
--   KumoMTA log/event ingestion.
+-   ZMAIL Core MTA message injection.
+-   ZMAIL Core MTA configuration deployment.
+-   ZMAIL Core MTA log/event ingestion.
 
 ## 13.3 End-to-end tests
 
 -   Register a Linux node.
--   Deploy KumoMTA.
+-   Deploy ZMAIL Core MTA.
 -   Verify container and process health.
 -   Add a domain and verify DNS.
 -   Configure DKIM.
 -   Configure an egress IP.
 -   Submit a test message to a controlled recipient.
--   Verify KumoMTA acceptance.
+-   Verify ZMAIL Core MTA acceptance.
 -   Verify remote SMTP acceptance where observable.
 -   Verify event ingestion.
 -   Verify analytics.
@@ -2116,7 +2116,7 @@ behaviour, not just whether components render.
 -   Make ClickHouse unavailable.
 -   Fail an object-storage request.
 -   Return DNS SERVFAIL.
--   Reject KumoMTA configuration.
+-   Reject ZMAIL Core MTA configuration.
 -   Simulate SMTP deferrals and bounces.
 -   Interrupt configuration deployment.
 -   Test restore from backup.
@@ -2142,7 +2142,7 @@ Use consistent definitions throughout MAILOS.
   ----------------------------------- -----------------------------------
   Submitted                           Application accepted the request
 
-  MTA accepted                        KumoMTA accepted the message for
+  MTA accepted                        ZMAIL Core MTA accepted the message for
                                       processing
 
   Remote accepted                     Receiving SMTP server accepted the
@@ -2211,7 +2211,7 @@ stable.
 -   Safe firewall operations.
 -   Node deployment workflows.
 
-## Workstream C --- KumoMTA
+## Workstream C --- ZMAIL Core MTA
 
 -   Container packaging.
 -   Persistent spool.
@@ -2324,7 +2324,7 @@ feature.
   Product category                    Enterprise email infrastructure
                                       operating system
 
-  Delivery engine                     KumoMTA
+  Delivery engine                     ZMAIL Core MTA
 
   Control plane                       Go
 
@@ -2351,7 +2351,7 @@ feature.
 
   Container runtime                   Docker
 
-  MTA configuration                   Lua and KumoMTA-supported
+  MTA configuration                   Lua and ZMAIL Core MTA-supported
                                       configuration
 
   Metrics                             Prometheus
@@ -2387,11 +2387,11 @@ feature.
 # 18. Official technical references
 
 Use current official documentation during implementation. Verify the
-exact KumoMTA version and API behaviour before relying on a particular
+exact ZMAIL Core MTA version and API behaviour before relying on a particular
 endpoint or configuration field.
 
--   KumoMTA documentation: https://docs.kumomta.com/
--   KumoMTA GitHub: https://github.com/KumoCorp/kumomta
+-   ZMAIL Core MTA documentation: https://docs.zmail-mta.com/
+-   ZMAIL Core MTA GitHub: https://github.com/mailops/mta
 -   Docker Engine API: https://docs.docker.com/engine/api/
 -   PostgreSQL documentation: https://www.postgresql.org/docs/
 -   Cloudflare D1: https://developers.cloudflare.com/d1/
@@ -2415,10 +2415,10 @@ endpoint or configuration field.
 # 19. Final product statement
 
 MAILOS is a complete email infrastructure operating system built around
-KumoMTA.
+ZMAIL Core MTA.
 
 It combines: - The delivery performance and operational primitives of
-KumoMTA. - The developer APIs, message logs and domain workflows of
+ZMAIL Core MTA. - The developer APIs, message logs and domain workflows of
 Mailgun. - The deliverability and campaign intelligence patterns of
 Bird. - The sandbox and debugging experience of Mailtrap. - The
 self-hosted infrastructure philosophy of Postal. - Real Linux and Docker
@@ -2429,7 +2429,7 @@ for selected edge metadata where useful. - B2/R2 for large and long-term
 object data. - ClickHouse for queryable event analytics.
 
 The defining requirement is that MAILOS must operate the actual
-infrastructure. It must deploy and manage real KumoMTA nodes, inspect
+infrastructure. It must deploy and manage real ZMAIL Core MTA nodes, inspect
 real queues, verify real DNS, observe real IP configuration, collect
 real events, archive real data and report actual outcomes.
 

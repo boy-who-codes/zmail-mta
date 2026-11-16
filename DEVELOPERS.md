@@ -1,11 +1,11 @@
-# kumomta
+# zmail-mta
 
 ## Debugging/Tracing
 
 This will launch the server using the policy defined in [simple_policy.lua](simple_policy.lua):
 
 ```
-KUMOD_LOG=kumod=trace cargo run -p kumod -- --policy simple_policy.lua
+MTAD_LOG=zmaild=trace cargo run -p zmaild -- --policy simple_policy.lua
 ```
 
 ## Metrics
@@ -77,15 +77,15 @@ as you make edits.
 To build a lightweight alpine-based docker image:
 
 ```
-$ ./docker/kumod/build-docker-image.sh
+$ ./docker/zmaild/build-docker-image.sh
 ...
-$ docker image ls kumomta/kumod
+$ docker image ls zmail-mta/zmaild
 REPOSITORY      TAG       IMAGE ID       CREATED         SIZE
-kumomta/kumod   latest    bbced15ff4d1   3 minutes ago   116MB
+zmail-mta/zmaild   latest    bbced15ff4d1   3 minutes ago   116MB
 ```
 
-You can then run that image; this invocation mounts the kumo
-src dir at `/config` and then the `KUMO_POLICY` environment
+You can then run that image; this invocation mounts the zmail
+src dir at `/config` and then the `MTA_POLICY` environment
 variable is used to override the default `/config/policy.lua`
 path to use the SMTP sink policy script [sink.lua](sink.lua),
 which will accept and discard all mail:
@@ -93,9 +93,9 @@ which will accept and discard all mail:
 ```
 $ sudo docker run --rm -p 2025:25 \
     -v .:/config \
-    --name kumo-sink \
-    --env KUMO_POLICY="/config/sink.lua" \
-    kumomta/kumod
+    --name zmail-sink \
+    --env MTA_POLICY="/config/sink.lua" \
+    zmail-mta/zmaild
 ```
 
 ## Fuzzing

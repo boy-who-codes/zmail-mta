@@ -1,15 +1,16 @@
 services:
-  # 1. KumoMTA Daemon (High-Speed Inbound & Outbound MTA)
+  # 1. High-Speed Inbound & Outbound MTA Daemon
   kumomta:
-    container_name: mailops-kumomta
+    container_name: mailops-mta
     hostname: mta.mailops.local
     image: ghcr.io/kumocorp/kumomta:latest
     restart: unless-stopped
     command: ["/opt/kumomta/sbin/kumod", "--policy", "/opt/kumomta/etc/policy/init.lua", "--user", "kumod"]
     ports:
-      - "25:2525"    # Public SMTP Inbound (Port 25)
-      - "2525:2525"  # Alternate unprivileged SMTP
-      - "8000:8000"  # KumoMTA HTTP Management & Injection API
+      - "${SMTP_PORT:-25}:2525"             # Public SMTP Inbound (Port 25)
+      - "${SMTP_ALT_PORT:-2525}:2525"       # Alternate unprivileged SMTP (Port 2525)
+      - "${SMTP_SUBMISSION_PORT:-587}:2525" # Secure submission (Port 587)
+      - "8000:8000"                         # Internal HTTP Management & Injection API
     volumes:
       - ./policy:/opt/kumomta/etc/policy:ro
       - ./spool:/var/spool/kumomta
@@ -51,7 +52,7 @@ services:
     networks:
       - mailops-net
 
-  # 4. MAILOPS Control Plane Backend (Go)
+  # 4. ZMAIL Control Plane Backend (Go)
   backend:
     container_name: mailops-backend
     build:
@@ -59,22 +60,25 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     volumes:
       - ../../backend/data:/app/data
       - ./policy:/app/policy
       - ./logs:/var/log/kumomta:ro
     environment:
       - PORT=8080
+      - PUBLIC_IP=${PUBLIC_IP:-}
+      - SMTP_HOSTNAME=${SMTP_HOSTNAME:-}
+      - PRIMARY_DOMAIN=${PRIMARY_DOMAIN:-}
       - KUMO_API=http://kumomta:8000
       - KUMO_SMTP=kumomta:2525
-      - REDIS_URL=redis:6379
+      - REDIS_URL=${REDIS_URL:-redis:6379}
     depends_on:
       - kumomta
     networks:
       - mailops-net
 
-  # 5. MAILOPS Web Desktop OS (Next.js)
+  # 5. ZMAIL Web Desktop OS (Next.js)
   web:
     container_name: mailops-web
     build:
@@ -82,9 +86,9 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     depends_on:
       - backend
     networks:
