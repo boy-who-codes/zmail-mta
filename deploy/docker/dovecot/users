@@ -1,0 +1,7 @@
+# Format: username:{PLAIN}password
+zmail_master:{PLAIN}zmail_live_sec_2026
+outbound@zmail.local:{PLAIN}outbound_prod_key_994
+alex@growth.zmail.local:{PLAIN}zmail_live_sec_2026
+sarah@growth.zmail.local:{PLAIN}zmail_live_sec_2026
+michael@reach.zmail.local:{PLAIN}zmail_live_sec_2026
+team@outreach.zmail.local:{PLAIN}zmail_live_sec_2026

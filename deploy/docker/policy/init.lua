@@ -27,12 +27,10 @@ local function authenticate_smtp_user(user, pass)
 
   local ok, res = pcall(function()
     local client = kumo.http.build_client({})
-    return client:post({
-      url = 'http://mailops-backend:8080/api/v1/smtp/auth',
-      headers = { ['Content-Type'] = 'application/json' },
-      body = kumo.json_encode({ username = user, password = pass }),
-      timeout = '5s',
-    })
+    local req = client:post('http://mailops-backend:8080/api/v1/smtp/auth')
+    req:header('Content-Type', 'application/json')
+    req:body(kumo.json_encode({ username = user, password = pass }))
+    return req:send()
   end)
 
   if ok and res and res:status_code() == 200 then
@@ -147,8 +145,16 @@ local function is_suppressed(recipient)
   return false
 end
 
--- Queue Configuration Hook (Phase 1: Dynamic Pool Egress Binding)
+-- Queue Configuration Hook (Phase 1: Dynamic Pool Egress Binding + Dovecot Maildir)
 kumo.on('get_queue_config', function(domain, tenant, campaign, routing_domain)
+  if campaign == 'maildir' or tenant == 'maildir' or domain == 'maildir' then
+    return kumo.make_queue_config {
+      protocol = {
+        maildir_path = '/var/mail/{{local_part}}@{{domain_part}}/Maildir',
+      },
+    }
+  end
+
   local egress_pool = 'default'
   if tenant and tenant ~= '' and pool_exists(tenant) then
     egress_pool = tenant
@@ -182,6 +188,12 @@ kumo.on('smtp_server_message_received', function(msg)
     msg:set_meta('tenant', pool_header)
   else
     msg:set_meta('tenant', 'default')
+  end
+
+  -- Standalone Two-Way Mailbox Routing: Deliver local recipient messages to Maildir for Dovecot IMAP
+  local rec_lower = string.lower(recipient):gsub('^<', ''):gsub('>$', '')
+  if string.find(rec_lower, 'zmail.local') or string.find(rec_lower, 'mailops.local') or msg:get_first_named_header_value('X-Local-Delivery') then
+    msg:set_meta('campaign', 'maildir')
   end
 
   -- MX Rollup for Big 4 Mailbox Providers (Phase 2)

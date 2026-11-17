@@ -5,6 +5,32 @@ max_deliveries_per_connection = 100
 max_message_rate = "100/s"
 enable_tls = "Opportunistic"
 
+[provider."yahoo"]
+match = [
+  { MXSuffix = ".yahoodns.net" }
+]
+connection_limit = 15
+max_connection_rate = "30/s"
+max_deliveries_per_connection = 50
+max_message_rate = "30/s"
+enable_tls = "Opportunistic"
+
+[[provider."yahoo".automation]]
+regex = '''\\[TS?S04\\]'''
+action = "Suspend"
+duration = "30m"
+
+[provider."outlook"]
+match = [
+  { MXSuffix = ".olc.protection.outlook.com" },
+  { MXSuffix = ".mail.protection.outlook.com" }
+]
+connection_limit = 20
+max_connection_rate = "40/s"
+max_deliveries_per_connection = 80
+max_message_rate = "40/s"
+enable_tls = "Opportunistic"
+
 [provider."apple"]
 match = [
   { MXSuffix = ".icloud.com" }
@@ -34,30 +60,4 @@ action = [
   { SetConfig = { name = "connection_limit", value = 2 } }
 ]
 duration = "15m"
-
-[provider."yahoo"]
-match = [
-  { MXSuffix = ".yahoodns.net" }
-]
-connection_limit = 15
-max_connection_rate = "30/s"
-max_deliveries_per_connection = 50
-max_message_rate = "30/s"
-enable_tls = "Opportunistic"
-
-[[provider."yahoo".automation]]
-regex = '''\\[TS?S04\\]'''
-action = "Suspend"
-duration = "30m"
-
-[provider."outlook"]
-match = [
-  { MXSuffix = ".olc.protection.outlook.com" },
-  { MXSuffix = ".mail.protection.outlook.com" }
-]
-connection_limit = 20
-max_connection_rate = "40/s"
-max_deliveries_per_connection = 80
-max_message_rate = "40/s"
-enable_tls = "Opportunistic"
 

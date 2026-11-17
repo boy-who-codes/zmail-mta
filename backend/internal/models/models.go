@@ -341,6 +341,10 @@ type Mailbox struct {
 	TLSMode            string    `json:"tls_mode,omitempty"` // "starttls", "tls13", "opportunistic"
 	SignatureHTML      string    `json:"signature_html,omitempty"`
 	WarmupEnabled      bool      `json:"warmup_enabled"`
+	WarmupDay          int       `json:"warmup_day,omitempty"`          // e.g. Day 1 - 14
+	WarmupTargetLimit  int       `json:"warmup_target_limit,omitempty"` // Final target daily limit (e.g. 400)
+	WarmupStrategy     string    `json:"warmup_strategy,omitempty"`     // "conservative", "standard", "aggressive"
+	WarmupStatus       string    `json:"warmup_status,omitempty"`       // "active", "completed", "paused_reputation", "disabled"
 	BounceRate         float64   `json:"bounce_rate"`
 	SpamRate           float64   `json:"spam_rate"`
 	CreatedAt          time.Time `json:"created_at"`
@@ -708,4 +712,30 @@ type SMTPAuthResponse struct {
 	Username      string `json:"username,omitempty"`
 	Pool          string `json:"pool,omitempty"`
 	Message       string `json:"message,omitempty"`
+}
+
+// WarmupScheduleProgress provides real-time progress for automated mailbox warmups
+type WarmupScheduleProgress struct {
+	MailboxID     string  `json:"mailbox_id"`
+	Email         string  `json:"email"`
+	DisplayName   string  `json:"display_name"`
+	CurrentLimit  int     `json:"current_limit"`
+	TargetLimit   int     `json:"target_limit"`
+	CurrentDay    int     `json:"current_day"`
+	TotalDays     int     `json:"total_days"`
+	ProgressPct   float64 `json:"progress_pct"`
+	Strategy      string  `json:"strategy"`
+	Status        string  `json:"status"` // "active", "completed", "paused_reputation", "disabled"
+	BounceRate    float64 `json:"bounce_rate"`
+	SpamRate      float64 `json:"spam_rate"`
+	NextRampLimit int     `json:"next_ramp_limit"`
+}
+
+// WarmupDaemonSummary returns aggregate metrics of the autonomous warmup engine
+type WarmupDaemonSummary struct {
+	TotalWarming    int                      `json:"total_warming"`
+	TotalCompleted  int                      `json:"total_completed"`
+	TotalPaused     int                      `json:"total_paused"`
+	Schedules       []WarmupScheduleProgress `json:"schedules"`
+	LastEvaluatedAt time.Time                `json:"last_evaluated_at"`
 }

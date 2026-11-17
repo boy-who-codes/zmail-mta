@@ -39,6 +39,9 @@ func main() {
 	workerPool := ingest.NewWorkerPool(redisCli, appStore)
 	workerPool.Start()
 
+	// Launch Autonomous Mailbox & IP Warmup Scheduler Daemon (evaluates daily ramp curves)
+	appStore.StartAutonomousWarmupWorker(context.Background(), 24*time.Hour)
+
 	webhookStreamer := webhook.NewStreamer(appStore)
 
 	server := api.NewServer(appStore, workerPool, webhookStreamer)

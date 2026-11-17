@@ -143,6 +143,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/smtp/credentials", s.handleDeleteSMTPCredential)
 	s.mux.HandleFunc("POST /api/v1/smtp/credentials/toggle", s.handleToggleSMTPCredential)
 	s.mux.HandleFunc("POST /api/v1/smtp/auth", s.handleAuthenticateSMTP)
+	s.mux.HandleFunc("POST /api/v1/smtp/test-connection", s.handleTestSMTPConnection)
+
+	// Autonomous Warmup Scheduler Daemon Endpoints
+	s.mux.HandleFunc("GET /api/v1/warmup/summary", s.handleGetWarmupSummary)
+	s.mux.HandleFunc("POST /api/v1/warmup/tick", s.handleTickWarmupSchedule)
+
+	// 1-Click Cloudflare DNS Provisioning Endpoint
+	s.mux.HandleFunc("POST /api/v1/dns/cloudflare/sync", s.handleCloudflareSync)
 
 	// Audience & Contacts Directory Endpoints
 	s.mux.HandleFunc("GET /api/v1/contacts", s.handleGetContacts)

@@ -14,6 +14,7 @@ services:
     volumes:
       - ./policy:/opt/kumomta/etc/policy:ro
       - ./spool:/var/spool/kumomta
+      - ./spool/mail:/var/mail
       - ./logs:/var/log/kumomta
     depends_on:
       kumo-tsa:
@@ -91,6 +92,26 @@ services:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     depends_on:
       - backend
+    networks:
+      - mailops-net
+
+  # 6. Self-Hosted IMAP Server (Dovecot for Outlook / Thunderbird / Apple Mail)
+  dovecot:
+    container_name: mailops-dovecot
+    hostname: imap.mailops.local
+    build:
+      context: ./dovecot
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${IMAP_PORT:-143}:143"     # IMAP with STARTTLS
+      - "${IMAPS_PORT:-993}:993"    # IMAPS (SSL/TLS)
+    volumes:
+      - ./dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./dovecot/users:/etc/dovecot/users:ro
+      - ./policy/tls.crt:/etc/dovecot/tls.crt:ro
+      - ./policy/tls.key:/etc/dovecot/tls.key:ro
+      - ./spool/mail:/var/mail
     networks:
       - mailops-net
 

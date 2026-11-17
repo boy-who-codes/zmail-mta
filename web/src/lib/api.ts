@@ -1375,3 +1375,68 @@ export async function toggleSmtpCredential(id: string, enabled: boolean): Promis
   });
   if (!res.ok) throw new Error("Failed to toggle SMTP credential");
 }
+
+export interface SMTPTestResult {
+  success: boolean;
+  latency_ms: number;
+  tls_version?: string;
+  message: string;
+}
+
+export async function testSmtpConnection(req: {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  tls_mode?: string;
+}): Promise<SMTPTestResult> {
+  const res = await fetch(`${API_BASE}/api/v1/smtp/test-connection`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to test SMTP connection");
+  }
+  return res.json();
+}
+
+export interface WarmupScheduleProgress {
+  mailbox_id: string;
+  email: string;
+  display_name: string;
+  current_limit: number;
+  target_limit: number;
+  current_day: number;
+  total_days: number;
+  progress_pct: number;
+  strategy: string;
+  status: string;
+  bounce_rate: number;
+  spam_rate: number;
+  next_ramp_limit: number;
+}
+
+export interface WarmupDaemonSummary {
+  total_warming: number;
+  total_completed: number;
+  total_paused: number;
+  schedules: WarmupScheduleProgress[];
+  last_evaluated_at: string;
+  message?: string;
+}
+
+export async function fetchWarmupSummary(): Promise<WarmupDaemonSummary> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/summary`);
+  if (!res.ok) throw new Error("Failed to fetch warmup summary");
+  return res.json();
+}
+
+export async function tickWarmupSchedule(): Promise<WarmupDaemonSummary> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/tick`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to advance warmup schedule");
+  return res.json();
+}

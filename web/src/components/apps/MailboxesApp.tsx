@@ -22,6 +22,9 @@ import {
   Lock,
   Sparkles,
   HelpCircle,
+  Flame,
+  Check,
+  XCircle,
 } from "lucide-react";
 import {
   Mailbox,
@@ -38,13 +41,19 @@ import {
   simulateMailboxRotation,
   fetchIPPools,
   IPPool,
+  testSmtpConnection,
+  SMTPTestResult,
+  fetchWarmupSummary,
+  tickWarmupSchedule,
+  WarmupDaemonSummary,
 } from "../../lib/api";
 
 export const MailboxesApp: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"pools" | "mailboxes" | "simulator">("pools");
+  const [activeTab, setActiveTab] = useState<"pools" | "mailboxes" | "warmup" | "simulator">("pools");
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [pools, setPools] = useState<MailboxPool[]>([]);
   const [ipPools, setIpPools] = useState<IPPool[]>([]);
+  const [warmupSummary, setWarmupSummary] = useState<WarmupDaemonSummary | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -69,9 +78,15 @@ export const MailboxesApp: React.FC = () => {
   const [mbSMTPHost, setMbSMTPHost] = useState("127.0.0.1");
   const [mbSMTPPort, setMbSMTPPort] = useState(2525);
   const [mbSMTPUser, setMbSMTPUser] = useState("");
+  const [mbSMTPPass, setMbSMTPPass] = useState("");
   const [mbTLSMode, setMbTLSMode] = useState("starttls");
   const [mbSignature, setMbSignature] = useState("");
   const [mbWarmup, setMbWarmup] = useState(true);
+
+  // Handshake Tester & Warmup Ticker State
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<SMTPTestResult | null>(null);
+  const [tickingWarmup, setTickingWarmup] = useState(false);
 
   // Pool Form State
   const [poolName, setPoolName] = useState("");
@@ -88,14 +103,16 @@ export const MailboxesApp: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [mRes, pRes, ipRes] = await Promise.all([
+      const [mRes, pRes, ipRes, wRes] = await Promise.all([
         fetchMailboxes().catch(() => []),
         fetchMailboxPools().catch(() => []),
         fetchIPPools().catch(() => []),
+        fetchWarmupSummary().catch(() => null),
       ]);
       setMailboxes(mRes);
       setPools(pRes);
       setIpPools(ipRes);
+      setWarmupSummary(wRes);
       if (pRes.length > 0 && !simPoolId) {
         setSimPoolId(pRes[0].id);
         setSimStrategy(pRes[0].strategy);
@@ -114,6 +131,43 @@ export const MailboxesApp: React.FC = () => {
   const showToast = (msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(null), 4000);
+  };
+
+  const handleTickWarmup = async () => {
+    try {
+      setTickingWarmup(true);
+      const res = await tickWarmupSchedule();
+      showToast(res.message || "Warmup schedule advanced by 1 day!");
+      await loadData();
+    } catch (err: any) {
+      showToast("Failed to advance warmup schedule: " + err.message);
+    } finally {
+      setTickingWarmup(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    try {
+      setTestingConnection(true);
+      setTestResult(null);
+      const res = await testSmtpConnection({
+        host: mbSMTPHost,
+        port: Number(mbSMTPPort),
+        username: mbSMTPUser || mbEmail,
+        password: mbSMTPPass,
+        tls_mode: mbTLSMode,
+      });
+      setTestResult(res);
+      if (res.success) {
+        showToast(`SMTP Handshake Successful (${res.latency_ms}ms)`);
+      } else {
+        showToast(`Handshake failed: ${res.message}`);
+      }
+    } catch (err: any) {
+      showToast("Connection test failed: " + err.message);
+    } finally {
+      setTestingConnection(false);
+    }
   };
 
   const handleCreateMailbox = async (e: React.FormEvent) => {
@@ -181,9 +235,11 @@ export const MailboxesApp: React.FC = () => {
     setMbSMTPHost("127.0.0.1");
     setMbSMTPPort(2525);
     setMbSMTPUser("");
+    setMbSMTPPass("");
     setMbTLSMode("starttls");
     setMbSignature("");
     setMbWarmup(true);
+    setTestResult(null);
   };
 
   const openEditMailbox = (mb: Mailbox) => {
@@ -201,6 +257,11 @@ export const MailboxesApp: React.FC = () => {
     setMbWeight(mb.weight);
     setMbSignature(mb.signature_html || "");
     setMbWarmup(mb.warmup_enabled);
+    setMbSMTPHost("127.0.0.1");
+    setMbSMTPPort(2525);
+    setMbSMTPUser(mb.email);
+    setMbSMTPPass("");
+    setTestResult(null);
     setShowAddMailboxModal(true);
   };
 
@@ -428,6 +489,18 @@ export const MailboxesApp: React.FC = () => {
         >
           <MailboxIcon className="w-3.5 h-3.5" />
           <span>Sender Mailboxes ({mailboxes.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("warmup")}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition-all ${
+            activeTab === "warmup"
+              ? "border-[#ff69b4] text-[#ff69b4]"
+              : "border-transparent text-[#8a8f98] hover:text-[#d0d6e0]"
+          }`}
+        >
+          <Flame className="w-3.5 h-3.5 text-amber-400" />
+          <span>Warmup Engine ({warmupSummary?.total_warming ?? mailboxes.filter(m => m.warmup_enabled).length})</span>
         </button>
 
         <button
@@ -807,6 +880,155 @@ export const MailboxesApp: React.FC = () => {
             )}
           </div>
         )}
+
+        {/* TAB 3: AUTONOMOUS WARMUP ENGINE */}
+        {activeTab === "warmup" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-[#f7f8f8] flex items-center gap-2">
+                  <span>Autonomous Mailbox &amp; IP Warmup Engine</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                    Background Daemon Active
+                  </span>
+                </h2>
+                <p className="text-xs text-[#8a8f98]">
+                  Automates gradual daily volume ramp-ups, pauses mailboxes if reputation degrades, and shields domain score.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleTickWarmup}
+                  disabled={tickingWarmup}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#141720] hover:bg-[#1f2433] border border-[#2d3345] text-xs text-white transition-all"
+                  title="Simulate or advance the 24-hour daemon evaluation cycle"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${tickingWarmup ? "animate-spin" : ""}`} />
+                  <span>Advance Schedule (+1 Day)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Warmup Metrics Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-[#0e1015] border border-[#20242e] space-y-1">
+                <div className="text-[10px] text-[#8a8f98] font-mono uppercase tracking-wider">Actively Warming</div>
+                <div className="text-xl font-bold text-amber-400">
+                  {warmupSummary?.total_warming ?? mailboxes.filter(m => m.warmup_enabled).length}
+                </div>
+                <div className="text-[10px] text-[#62666d]">Enforcing daily ramp curves</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#0e1015] border border-[#20242e] space-y-1">
+                <div className="text-[10px] text-[#8a8f98] font-mono uppercase tracking-wider">Graduated / Target Met</div>
+                <div className="text-xl font-bold text-[#27a644]">
+                  {warmupSummary?.total_completed ?? 0}
+                </div>
+                <div className="text-[10px] text-[#62666d]">Full capacity unlocked</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#0e1015] border border-[#20242e] space-y-1">
+                <div className="text-[10px] text-[#8a8f98] font-mono uppercase tracking-wider">Circuit Broken / Paused</div>
+                <div className="text-xl font-bold text-rose-400">
+                  {warmupSummary?.total_paused ?? 0}
+                </div>
+                <div className="text-[10px] text-[#62666d]">Bounce &gt;2% or Spam &gt;0.08%</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#0e1015] border border-[#20242e] space-y-1">
+                <div className="text-[10px] text-[#8a8f98] font-mono uppercase tracking-wider">Auto-Ramp Daemon Cycle</div>
+                <div className="text-xs font-mono font-bold text-[#3b9eff] truncate mt-1">
+                  {warmupSummary?.last_evaluated_at ? new Date(warmupSummary.last_evaluated_at).toLocaleTimeString() : "Autonomous (24h)"}
+                </div>
+                <div className="text-[10px] text-[#62666d]">Evaluates health &amp; lifts limits</div>
+              </div>
+            </div>
+
+            {/* Warming Mailboxes Table */}
+            <div className="p-5 rounded-2xl bg-[#0e1015] border border-[#20242e] space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-sm text-white">Mailbox Warmup Ramps</h3>
+                  <p className="text-[11px] text-[#8a8f98]">
+                    Daily volume expansion tracking per sender identity.
+                  </p>
+                </div>
+              </div>
+
+              {warmupSummary && warmupSummary.schedules && warmupSummary.schedules.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-[#20242e] text-[#8a8f98] text-[10px] font-mono uppercase">
+                        <th className="py-2.5 px-3">Sender Mailbox</th>
+                        <th className="py-2.5 px-3">Strategy</th>
+                        <th className="py-2.5 px-3">Current Day</th>
+                        <th className="py-2.5 px-3">Daily Limit / Target</th>
+                        <th className="py-2.5 px-3">Ramp Progress</th>
+                        <th className="py-2.5 px-3">Reputation Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1b1e26] font-mono">
+                      {warmupSummary.schedules.map((s) => (
+                        <tr key={s.mailbox_id} className="hover:bg-[#141720]/40 transition-colors">
+                          <td className="py-3 px-3">
+                            <div className="font-semibold text-white font-sans">{s.display_name}</div>
+                            <div className="text-[11px] text-[#8a8f98]">{s.email}</div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#161a24] border border-[#293042] text-[#3b9eff] uppercase">
+                              {s.strategy}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-[#d0d6e0]">
+                            Day {s.current_day} / {s.total_days}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className="text-white font-bold">{s.current_limit}</span>
+                            <span className="text-[#8a8f98]"> / {s.target_limit} msgs</span>
+                          </td>
+                          <td className="py-3 px-3 w-48">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-2 rounded-full bg-[#1b1f2b] overflow-hidden">
+                                <div
+                                  className="h-full rounded-full bg-gradient-to-r from-amber-500 to-[#27a644]"
+                                  style={{ width: `${Math.min(100, Math.round(s.progress_pct))}%` }}
+                                />
+                              </div>
+                              <span className="text-[10px] text-[#8a8f98] w-8">
+                                {Math.round(s.progress_pct)}%
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-3 px-3">
+                            {s.status === "paused" ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30">
+                                <AlertTriangle className="w-3 h-3" /> Circuit Broken
+                              </span>
+                            ) : s.status === "completed" ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#27a644]/10 text-[#27a644] border border-[#27a644]/30">
+                                <CheckCircle2 className="w-3 h-3" /> Graduated
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                                <Flame className="w-3 h-3" /> Warming Healthy
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-8 text-center text-xs text-[#8a8f98]">
+                  No mailboxes are currently enrolled in warmup schedules. Enable &quot;automated warmup ramp-up&quot; when adding or editing a mailbox.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* MODAL: ADD / EDIT SENDER MAILBOX */}
@@ -961,6 +1183,93 @@ export const MailboxesApp: React.FC = () => {
                   placeholder="<p>--<br><strong>Sarah Jenkins</strong><br>VP Growth Engineering</p>"
                   className="w-full mt-1 bg-[#141720] border border-[#262c3b] rounded-xl p-2.5 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none resize-none"
                 />
+              </div>
+
+              {/* SMTP Connection & Live Handshake Tester */}
+              <div className="p-3.5 rounded-xl bg-[#12141c] border border-[#202534] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                    <Server className="w-3.5 h-3.5 text-[#ff69b4]" />
+                    <span>SMTP Handshake &amp; Credentials</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-[#8a8f98]">Port 2525 / 587 ESMTP</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-[#8a8f98]">SMTP Server Host</label>
+                    <input
+                      type="text"
+                      value={mbSMTPHost}
+                      onChange={(e) => setMbSMTPHost(e.target.value)}
+                      placeholder="127.0.0.1 or mail.domain.com"
+                      className="w-full mt-1 bg-[#141720] border border-[#262c3b] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-[#8a8f98]">SMTP Port</label>
+                    <input
+                      type="number"
+                      value={mbSMTPPort}
+                      onChange={(e) => setMbSMTPPort(Number(e.target.value))}
+                      className="w-full mt-1 bg-[#141720] border border-[#262c3b] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-[#8a8f98]">SMTP Username</label>
+                    <input
+                      type="text"
+                      value={mbSMTPUser}
+                      onChange={(e) => setMbSMTPUser(e.target.value)}
+                      placeholder={mbEmail || "username"}
+                      className="w-full mt-1 bg-[#141720] border border-[#262c3b] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-[#8a8f98]">SMTP Password / Token</label>
+                    <input
+                      type="password"
+                      value={mbSMTPPass}
+                      onChange={(e) => setMbSMTPPass(e.target.value)}
+                      placeholder="••••••••••••"
+                      className="w-full mt-1 bg-[#141720] border border-[#262c3b] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    type="button"
+                    onClick={handleTestConnection}
+                    disabled={testingConnection}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1c2230] hover:bg-[#252d40] border border-[#30384f] text-[11px] text-white transition-all cursor-pointer"
+                  >
+                    <Zap className={`w-3 h-3 text-[#ff69b4] ${testingConnection ? "animate-spin" : ""}`} />
+                    <span>{testingConnection ? "Testing Handshake..." : "⚡ Test SMTP Handshake"}</span>
+                  </button>
+                  {testResult && (
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      {testResult.success ? (
+                        <span className="text-[#27a644] flex items-center gap-1 font-mono">
+                          <Check className="w-3.5 h-3.5" /> Handshake OK ({testResult.latency_ms}ms)
+                        </span>
+                      ) : (
+                        <span className="text-rose-400 flex items-center gap-1 font-mono">
+                          <XCircle className="w-3.5 h-3.5" /> Handshake failed
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {testResult && !testResult.success && (
+                  <div className="p-2 rounded-lg bg-rose-950/30 border border-rose-500/30 text-rose-300 text-[10px] font-mono break-all">
+                    {testResult.message}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between pt-3 border-t border-[#20242e]">

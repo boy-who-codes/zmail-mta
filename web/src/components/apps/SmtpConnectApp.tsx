@@ -23,7 +23,9 @@ import {
   Key,
   Eye,
   EyeOff,
-  UserCheck
+  UserCheck,
+  Zap,
+  Inbox
 } from "lucide-react";
 import {
   fetchSmtpInfo,
@@ -37,7 +39,9 @@ import {
   toggleSmtpCredential,
   SMTPCredential,
   fetchIPPools,
-  IPPool
+  IPPool,
+  testSmtpConnection,
+  SMTPTestResult
 } from "../../lib/api";
 
 interface HostInfo {
@@ -86,6 +90,8 @@ export const SmtpConnectApp: React.FC = () => {
   const [newCredPool, setNewCredPool] = useState("default");
   const [isAddingCred, setIsAddingCred] = useState(false);
   const [credError, setCredError] = useState("");
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<SMTPTestResult | null>(null);
 
   // Whitelist state
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
@@ -217,6 +223,29 @@ export const SmtpConnectApp: React.FC = () => {
       setCredentials(updated);
     } catch (err: any) {
       alert(err.message || "Failed to toggle credential");
+    }
+  };
+
+  const handleTestHandshake = async (user?: string, pass?: string) => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await testSmtpConnection({
+        host: effectiveHost,
+        port: 587,
+        username: user || newCredUser || credentials[0]?.username,
+        password: pass || newCredPass || credentials[0]?.password,
+        tls_mode: "starttls",
+      });
+      setTestResult(res);
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        latency_ms: 0,
+        message: err.message || "Failed to reach SMTP server",
+      });
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -397,47 +426,78 @@ export const SmtpConnectApp: React.FC = () => {
                     <Laptop className="w-4 h-4 text-[#ff69b4]" />
                     <span className="font-semibold text-[#f7f8f8]">Microsoft Outlook & Email Client Connection</span>
                   </div>
-                  <button
-                    onClick={() => {
-                      const c = credentials[0];
-                      const allInfo = `SMTP Server: ${effectiveHost}\nPort: 587 (or 2525)\nSecurity: STARTTLS\nUsername: ${c.username}\nPassword: ${c.password || "zmail_live_sec_2026"}`;
-                      copyToClipboard(allInfo, "outlook-all");
-                    }}
-                    className="px-2.5 py-1 rounded bg-[#23252a] hover:bg-[#2e3137] text-[11px] font-mono text-[#f7f8f8] flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {copiedId === "outlook-all" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5 text-[#8a8f98]" />}
-                    <span>{copiedId === "outlook-all" ? "Copied!" : "Copy All for Outlook"}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleTestHandshake(credentials[0].username, credentials[0].password)}
+                      disabled={testingConnection}
+                      className="px-2.5 py-1 rounded bg-[#3b9eff]/20 hover:bg-[#3b9eff]/30 border border-[#3b9eff]/40 text-[11px] font-mono text-[#3b9eff] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap className={`w-3.5 h-3.5 ${testingConnection ? "animate-spin" : ""}`} />
+                      <span>{testingConnection ? "Pinging 587..." : "⚡ Test Handshake"}</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        const c = credentials[0];
+                        const allInfo = `=== OUTLOOK ACCOUNT CONFIGURATION ===\nOutgoing Server (SMTP): ${effectiveHost}\nSMTP Port: 587\nSMTP Security: STARTTLS\n\nIncoming Server (IMAP): ${effectiveHost}\nIMAP Port: 993\nIMAP Security: SSL/TLS\n\nUsername: ${c.username}\nPassword: ${c.password || "zmail_live_sec_2026"}`;
+                        copyToClipboard(allInfo, "outlook-all");
+                      }}
+                      className="px-2.5 py-1 rounded bg-[#23252a] hover:bg-[#2e3137] text-[11px] font-mono text-[#f7f8f8] flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedId === "outlook-all" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5 text-[#8a8f98]" />}
+                      <span>{copiedId === "outlook-all" ? "Copied!" : "Copy All for Outlook"}</span>
+                    </button>
+                  </div>
                 </div>
 
+                {testResult && (
+                  <div className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
+                    testResult.success
+                      ? "bg-[#27a644]/15 border-[#27a644]/30 text-[#27a644]"
+                      : "bg-[#eb5757]/15 border-[#eb5757]/30 text-[#eb5757]"
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {testResult.success ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                      <span>{testResult.message}</span>
+                    </div>
+                    {testResult.success && (
+                      <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-[#27a644]/20">
+                        ⚡ {testResult.latency_ms}ms latency
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 <p className="text-[11px] text-[#8a8f98]">
-                  Enter these exact credentials in Microsoft Outlook, Apple Mail, Thunderbird, or your CRM under <strong>Outgoing Mail Server (SMTP)</strong>.
+                  Enter these parameters in Microsoft Outlook, Apple Mail, Thunderbird, or your CRM for two-way sending (SMTP) and reading (IMAP).
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
+                  {/* Outgoing SMTP */}
                   <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] uppercase text-[#62666d]">SMTP Server</div>
-                      <div className="text-[#f7f8f8] font-bold">{effectiveHost}</div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Outgoing Server (SMTP)</div>
+                      <div className="text-[#f7f8f8] font-bold">{effectiveHost} : 587 (STARTTLS)</div>
                     </div>
-                    <button onClick={() => copyToClipboard(effectiveHost, "q-host")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
-                      {copiedId === "q-host" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    <button onClick={() => copyToClipboard(`${effectiveHost}:587`, "q-smtp")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
+                      {copiedId === "q-smtp" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                   </div>
 
+                  {/* Incoming IMAP */}
                   <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] uppercase text-[#62666d]">Port & Encryption</div>
-                      <div className="text-[#f7f8f8] font-bold">587 / STARTTLS</div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Incoming Server (IMAP)</div>
+                      <div className="text-[#3b9eff] font-bold">{effectiveHost} : 993 (SSL/TLS)</div>
                     </div>
-                    <button onClick={() => copyToClipboard("587", "q-port")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
-                      {copiedId === "q-port" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    <button onClick={() => copyToClipboard(`${effectiveHost}:993`, "q-imap")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
+                      {copiedId === "q-imap" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                   </div>
 
+                  {/* Username */}
                   <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] uppercase text-[#62666d]">Username</div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Logon Username</div>
                       <div className="text-[#ff69b4] font-bold">{credentials[0].username}</div>
                     </div>
                     <button onClick={() => copyToClipboard(credentials[0].username, "q-user")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
@@ -445,9 +505,10 @@ export const SmtpConnectApp: React.FC = () => {
                     </button>
                   </div>
 
+                  {/* Password */}
                   <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] uppercase text-[#62666d]">Password</div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Logon Password</div>
                       <div className="text-[#27a644] font-bold">
                         {showPassMap[credentials[0].id] ? (credentials[0].password || "zmail_live_sec_2026") : "••••••••••••"}
                       </div>
@@ -1077,21 +1138,33 @@ export const SmtpConnectApp: React.FC = () => {
                 This credential will be accepted on port 587 (STARTTLS) and port 2525 using standard ESMTP AUTH PLAIN / LOGIN.
               </p>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-[#23252a]">
+              <div className="flex items-center justify-between pt-2 border-t border-[#23252a]">
                 <button
                   type="button"
-                  onClick={() => setIsCredModalOpen(false)}
-                  className="px-3 py-1.5 rounded bg-[#18191a] hover:bg-[#1f2022] text-[#8a8f98] hover:text-[#f7f8f8]"
+                  onClick={() => handleTestHandshake(newCredUser, newCredPass)}
+                  disabled={testingConnection || !newCredUser}
+                  className="px-2.5 py-1.5 rounded bg-[#3b9eff]/20 hover:bg-[#3b9eff]/30 border border-[#3b9eff]/40 text-xs font-mono text-[#3b9eff] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
-                  Cancel
+                  <Zap className={`w-3.5 h-3.5 ${testingConnection ? "animate-spin" : ""}`} />
+                  <span>{testingConnection ? "Pinging 587..." : "⚡ Test Handshake"}</span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={isAddingCred}
-                  className="px-4 py-1.5 rounded bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold shadow-sm transition-colors disabled:opacity-50"
-                >
-                  {isAddingCred ? "Saving..." : "Create Credential"}
-                </button>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsCredModalOpen(false)}
+                    className="px-3 py-1.5 rounded bg-[#18191a] hover:bg-[#1f2022] text-[#8a8f98] hover:text-[#f7f8f8]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAddingCred}
+                    className="px-4 py-1.5 rounded bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold shadow-sm transition-colors disabled:opacity-50"
+                  >
+                    {isAddingCred ? "Saving..." : "Create Credential"}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
