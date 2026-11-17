@@ -269,25 +269,139 @@ type WarmupStats struct {
 
 // Campaign represents an email broadcast campaign
 type Campaign struct {
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Subject           string            `json:"subject"`
+	FromName          string            `json:"from_name"`
+	FromEmail         string            `json:"from_email"`
+	ReplyTo           string            `json:"reply_to,omitempty"`
+	ReturnPathDomain  string            `json:"return_path_domain,omitempty"`
+	CategoryTag       string            `json:"category_tag,omitempty"` // e.g. "[Q4-Enterprise]", "[Warmup]"
+	Priority          string            `json:"priority,omitempty"`     // "high", "normal", "bulk"
+	Audience          string            `json:"audience"`
+	RecipientCount    int               `json:"recipient_count"`
+	Status            string            `json:"status"` // "draft", "scheduled", "sending", "completed", "paused"
+	SentCount         int               `json:"sent_count"`
+	OpenRate          float64           `json:"open_rate"`
+	ClickRate         float64           `json:"click_rate"`
+	ScheduledAt       string            `json:"scheduled_at,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	BodyHTML          string            `json:"body_html"`
+	BodyPreview       string            `json:"body_preview"`
+	IPPool            string            `json:"ip_pool,omitempty"`
+	Recipients        []string          `json:"recipients,omitempty"`
+	TemplateID        string            `json:"template_id,omitempty"`
+	Steps             []CampaignStep    `json:"steps,omitempty"`             // Unified timeline steps
+	SenderMode        string            `json:"sender_mode,omitempty"`       // "single" | "pool"
+	MailboxPoolID     string            `json:"mailbox_pool_id,omitempty"`   // assigned pool if mode=="pool"
+	RotationStrategy  string            `json:"rotation_strategy,omitempty"` // "round_robin" | "weighted_round_robin" | "least_recently_used" | "least_utilized"
+	SendWindowStart   string            `json:"send_window_start,omitempty"` // e.g. "09:00"
+	SendWindowEnd     string            `json:"send_window_end,omitempty"`   // e.g. "17:00"
+	SendWindowDays    string            `json:"send_window_days,omitempty"`  // "business_days" | "all_days"
+	JitterMinSeconds  int               `json:"jitter_min_seconds,omitempty"`
+	JitterMaxSeconds  int               `json:"jitter_max_seconds,omitempty"`
+	DailyCap          int               `json:"daily_cap,omitempty"`
+	CustomHeaders     map[string]string `json:"custom_headers,omitempty"`
+	TrackOpens        bool              `json:"track_opens"`
+	TrackClicks       bool              `json:"track_clicks"`
+	TrackingDomain    string            `json:"tracking_domain,omitempty"`
+	CustomFooterHTML  string            `json:"custom_footer_html,omitempty"`
+	UnsubscribeURL    string            `json:"unsubscribe_url,omitempty"`
+	UnsubscribeText   string            `json:"unsubscribe_text,omitempty"`
+	CompanyAddress    string            `json:"company_address,omitempty"`
+	EnableOneClick    bool              `json:"enable_one_click,omitempty"`
+	EnableBranding    bool              `json:"enable_branding,omitempty"`
+}
+
+// Mailbox represents an authorized sender identity within a rotation pool
+type Mailbox struct {
+	ID                 string    `json:"id"`
+	Email              string    `json:"email"`
+	DisplayName        string    `json:"display_name"`
+	FirstName          string    `json:"first_name,omitempty"`
+	LastName           string    `json:"last_name,omitempty"`
+	Department         string    `json:"department,omitempty"`
+	Domain             string    `json:"domain"`
+	DKIMSelector       string    `json:"dkim_selector,omitempty"`
+	IPPoolID           string    `json:"ip_pool_id"`
+	DailyLimit         int       `json:"daily_limit"`
+	HourlyLimit        int       `json:"hourly_limit"`
+	MinIntervalSeconds int       `json:"min_interval_seconds"`
+	DailySent          int       `json:"daily_sent"`
+	HourlySent         int       `json:"hourly_sent"`
+	LastSentAt         time.Time `json:"last_sent_at"`
+	Enabled            bool      `json:"enabled"`
+	IsVerified         bool      `json:"is_verified"`
+	HealthStatus       string    `json:"health_status"` // "excellent", "good", "warning", "suspended"
+	Weight             int       `json:"weight"`        // 1-100 for weighted round robin
+	CredentialRef      string    `json:"credential_ref,omitempty"` // encrypted key reference or "system_internal"
+	SMTPHost           string    `json:"smtp_host,omitempty"`
+	SMTPPort           int       `json:"smtp_port,omitempty"`
+	SMTPUser           string    `json:"smtp_user,omitempty"`
+	TLSMode            string    `json:"tls_mode,omitempty"` // "starttls", "tls13", "opportunistic"
+	SignatureHTML      string    `json:"signature_html,omitempty"`
+	WarmupEnabled      bool      `json:"warmup_enabled"`
+	BounceRate         float64   `json:"bounce_rate"`
+	SpamRate           float64   `json:"spam_rate"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// MailboxPool groups multiple mailboxes for automated sender rotation
+type MailboxPool struct {
 	ID             string    `json:"id"`
 	Name           string    `json:"name"`
-	Subject        string    `json:"subject"`
-	FromName       string    `json:"from_name"`
-	FromEmail      string    `json:"from_email"`
-	ReplyTo        string    `json:"reply_to,omitempty"`
-	Audience       string    `json:"audience"`
-	RecipientCount int       `json:"recipient_count"`
-	Status         string    `json:"status"` // "draft", "scheduled", "sending", "completed", "paused"
-	SentCount      int       `json:"sent_count"`
-	OpenRate       float64   `json:"open_rate"`
-	ClickRate      float64   `json:"click_rate"`
-	ScheduledAt    string    `json:"scheduled_at,omitempty"`
+	Description    string    `json:"description"`
+	Strategy       string    `json:"strategy"` // "round_robin", "weighted_round_robin", "least_recently_used", "least_utilized"
+	MailboxIDs     []string  `json:"mailbox_ids"`
+	DailyCapacity  int       `json:"daily_capacity"`
+	HourlyCapacity int       `json:"hourly_capacity"`
+	Enabled        bool      `json:"enabled"`
 	CreatedAt      time.Time `json:"created_at"`
-	BodyHTML       string    `json:"body_html"`
-	BodyPreview    string    `json:"body_preview"`
-	IPPool         string    `json:"ip_pool,omitempty"`
-	Recipients     []string  `json:"recipients,omitempty"`
-	TemplateID     string    `json:"template_id,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// MailboxAssignment tracks persistent recipient-to-mailbox bindings for sender consistency across retries
+type MailboxAssignment struct {
+	CampaignID        string    `json:"campaign_id"`
+	Recipient         string    `json:"recipient"`
+	MailboxID         string    `json:"mailbox_id"`
+	SenderEmail       string    `json:"sender_email"`
+	SenderName        string    `json:"sender_name"`
+	OriginalMessageID string    `json:"original_message_id,omitempty"`
+	AssignedAt        time.Time `json:"assigned_at"`
+}
+
+// MailboxRotationSimulation provides preview data of recipient distributions
+type MailboxRotationSimulation struct {
+	PoolID       string                       `json:"pool_id"`
+	Strategy     string                       `json:"strategy"`
+	Assignments  []RecipientMailboxSimulation `json:"assignments"`
+	SummaryStats map[string]int               `json:"summary_stats"`
+}
+
+// RecipientMailboxSimulation details a simulated recipient dispatch
+type RecipientMailboxSimulation struct {
+	Recipient   string `json:"recipient"`
+	MailboxID   string `json:"mailbox_id"`
+	SenderEmail string `json:"sender_email"`
+	SenderName  string `json:"sender_name"`
+	Eligible    bool   `json:"eligible"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// SystemSettings provides cluster-wide operational defaults and master toggles
+type SystemSettings struct {
+	MailboxRotationEnabled   bool   `json:"mailbox_rotation_enabled"` // Master toggle for mailbox rotation
+	EnforceSenderContinuity  bool   `json:"enforce_sender_continuity"` // Prohibits rotation in follow-up steps
+	EnforceMinInterval       bool   `json:"enforce_min_interval"`
+	DefaultRotationStrategy  string `json:"default_rotation_strategy"`
+	DefaultIPPool            string `json:"default_ip_pool"`
+	RequireVerifiedDomain    bool   `json:"require_verified_domain"`
+	OneClickUnsubscribe      bool   `json:"one_click_unsubscribe"`
+	CustomLegalFooter        string `json:"custom_legal_footer"`
+	CompanyAddress           string `json:"company_address"`
+	BrandingEnabled          bool   `json:"branding_enabled"`
 }
 
 // CampaignDispatchRequest requests execution of a campaign broadcast

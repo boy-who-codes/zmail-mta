@@ -30,50 +30,61 @@ import (
 
 // PersistentState stores user-managed entities to disk
 type PersistentState struct {
-	Domains         []models.Domain              `json:"domains"`
-	IPPools         []models.IPPool              `json:"ip_pools"`
-	IPs             []models.SendingIP           `json:"ips"`
-	Messages        []models.QueuedMessage       `json:"messages"`
-	RateLimits      []models.RateLimit           `json:"rate_limits"`
-	Whitelist       []models.RelayWhitelistEntry `json:"whitelist"`
-	Suppressions    []models.SuppressionEntry    `json:"suppressions"`
-	Bounces         []models.BounceRecord        `json:"bounces"`
-	WarmupSchedules []models.IPWarmupSchedule    `json:"warmup_schedules"`
-	Campaigns       []models.Campaign            `json:"campaigns"`
-	Contacts        []models.Contact             `json:"contacts"`
-	InboundMessages []models.InboundMessage      `json:"inbound_messages"`
-	InboundRoutes   []models.InboundRoute        `json:"inbound_routes"`
-	Subaccounts     []models.Subaccount          `json:"subaccounts"`
-	APIKeys         []models.APIKey              `json:"api_keys"`
-	Webhooks        []models.WebhookSubscription `json:"webhooks"`
-	Templates       []models.Template            `json:"templates"`
+	Domains            []models.Domain              `json:"domains"`
+	IPPools            []models.IPPool              `json:"ip_pools"`
+	IPs                []models.SendingIP           `json:"ips"`
+	Messages           []models.QueuedMessage       `json:"messages"`
+	RateLimits         []models.RateLimit           `json:"rate_limits"`
+	Whitelist          []models.RelayWhitelistEntry `json:"whitelist"`
+	Suppressions       []models.SuppressionEntry    `json:"suppressions"`
+	Bounces            []models.BounceRecord        `json:"bounces"`
+	WarmupSchedules    []models.IPWarmupSchedule    `json:"warmup_schedules"`
+	Campaigns          []models.Campaign            `json:"campaigns"`
+	Contacts           []models.Contact             `json:"contacts"`
+	InboundMessages    []models.InboundMessage      `json:"inbound_messages"`
+	InboundRoutes      []models.InboundRoute        `json:"inbound_routes"`
+	Subaccounts        []models.Subaccount          `json:"subaccounts"`
+	APIKeys            []models.APIKey              `json:"api_keys"`
+	Webhooks           []models.WebhookSubscription `json:"webhooks"`
+	Templates          []models.Template            `json:"templates"`
+	Mailboxes          []models.Mailbox             `json:"mailboxes"`
+	MailboxPools       []models.MailboxPool         `json:"mailbox_pools"`
+	MailboxAssignments []models.MailboxAssignment   `json:"mailbox_assignments"`
+	SystemSettings     models.SystemSettings        `json:"system_settings"`
+	Playbooks          []models.AutomationPlaybook  `json:"playbooks"`
 }
 
 // Store manages transactional and operational state
 type Store struct {
-	mu              sync.RWMutex
-	filePath        string
-	domains         map[string]models.Domain
-	ips             map[string]models.SendingIP
-	pools           map[string]models.IPPool
-	messages        []models.QueuedMessage
-	rateLimits      map[string]models.RateLimit
-	whitelist       map[string]models.RelayWhitelistEntry
-	connections     []models.IncomingConnectionLog
-	suppressions    map[string]models.SuppressionEntry
-	bounces         []models.BounceRecord
-	warmupPlans     map[string]models.WarmupPlan
-	warmupSchedules map[string]models.IPWarmupSchedule
-	campaigns       map[string]models.Campaign
-	contacts        map[string]models.Contact
-	inboundMessages []models.InboundMessage
-	inboundRoutes   map[string]models.InboundRoute
-	subaccounts     map[string]models.Subaccount
-	apiKeys         map[string]models.APIKey
-	webhooks        map[string]models.WebhookSubscription
-	webhookLogs     []models.EventWebhookPayload
-	templates       map[string]models.Template
-	detector        *ipdetect.Detector
+	mu                   sync.RWMutex
+	filePath             string
+	domains              map[string]models.Domain
+	ips                  map[string]models.SendingIP
+	pools                map[string]models.IPPool
+	messages             []models.QueuedMessage
+	rateLimits           map[string]models.RateLimit
+	whitelist            map[string]models.RelayWhitelistEntry
+	connections          []models.IncomingConnectionLog
+	suppressions         map[string]models.SuppressionEntry
+	bounces              []models.BounceRecord
+	warmupPlans          map[string]models.WarmupPlan
+	warmupSchedules      map[string]models.IPWarmupSchedule
+	campaigns            map[string]models.Campaign
+	contacts             map[string]models.Contact
+	inboundMessages      []models.InboundMessage
+	inboundRoutes        map[string]models.InboundRoute
+	subaccounts          map[string]models.Subaccount
+	apiKeys              map[string]models.APIKey
+	webhooks             map[string]models.WebhookSubscription
+	webhookLogs          []models.EventWebhookPayload
+	templates            map[string]models.Template
+	detector             *ipdetect.Detector
+	mailboxes            map[string]models.Mailbox
+	mailboxPools         map[string]models.MailboxPool
+	mailboxAssignments   map[string]models.MailboxAssignment
+	mailboxRotationIndex map[string]int
+	systemSettings       models.SystemSettings
+	playbooks            map[string]models.AutomationPlaybook
 }
 
 // NewStore initializes a clean, unseeded store backed by persistent disk storage
@@ -101,14 +112,33 @@ func NewStore(dataFile string) *Store {
 		inboundMessages: make([]models.InboundMessage, 0),
 		inboundRoutes:   make(map[string]models.InboundRoute),
 		subaccounts:     make(map[string]models.Subaccount),
-		apiKeys:         make(map[string]models.APIKey),
-		webhooks:        make(map[string]models.WebhookSubscription),
-		webhookLogs:     make([]models.EventWebhookPayload, 0),
-		templates:       make(map[string]models.Template),
+		apiKeys:              make(map[string]models.APIKey),
+		webhooks:             make(map[string]models.WebhookSubscription),
+		webhookLogs:          make([]models.EventWebhookPayload, 0),
+		templates:            make(map[string]models.Template),
+		mailboxes:            make(map[string]models.Mailbox),
+		mailboxPools:         make(map[string]models.MailboxPool),
+		mailboxAssignments:   make(map[string]models.MailboxAssignment),
+		mailboxRotationIndex: make(map[string]int),
+		playbooks:            make(map[string]models.AutomationPlaybook),
+		systemSettings: models.SystemSettings{
+			MailboxRotationEnabled:  true,
+			EnforceSenderContinuity: true,
+			EnforceMinInterval:      true,
+			DefaultRotationStrategy: "least_utilized",
+			DefaultIPPool:           "default",
+			RequireVerifiedDomain:   true,
+			OneClickUnsubscribe:     true,
+			CustomLegalFooter:       "100 Enterprise Way, Suite 400, San Francisco, CA 94107",
+			CompanyAddress:          "ZMAIL Infrastructure Group • 100 Enterprise Way, SF, CA",
+			BrandingEnabled:         true,
+		},
 	}
 
 	// Initialize standard enterprise warmup plan presets
 	s.initWarmupPlansLocked()
+	s.initDefaultPlaybooksLocked()
+	s.initDefaultMailboxesLocked()
 
 	// Load existing persistent state if file exists
 	if data, err := os.ReadFile(dataFile); err == nil {
@@ -167,6 +197,21 @@ func NewStore(dataFile string) *Store {
 			}
 			for _, tmpl := range state.Templates {
 				s.templates[tmpl.ID] = tmpl
+			}
+			for _, m := range state.Mailboxes {
+				s.mailboxes[m.ID] = m
+			}
+			for _, p := range state.MailboxPools {
+				s.mailboxPools[p.ID] = p
+			}
+			for _, a := range state.MailboxAssignments {
+				s.mailboxAssignments[a.CampaignID+":"+a.Recipient] = a
+			}
+			if state.SystemSettings.DefaultRotationStrategy != "" {
+				s.systemSettings = state.SystemSettings
+			}
+			for _, pb := range state.Playbooks {
+				s.playbooks[pb.ID] = pb
 			}
 			s.inboundMessages = state.InboundMessages
 			s.bounces = state.Bounces
@@ -371,9 +416,14 @@ func (s *Store) saveLocked() {
 		InboundMessages: s.inboundMessages,
 		InboundRoutes:   make([]models.InboundRoute, 0, len(s.inboundRoutes)),
 		Subaccounts:     make([]models.Subaccount, 0, len(s.subaccounts)),
-		APIKeys:         make([]models.APIKey, 0, len(s.apiKeys)),
-		Webhooks:        make([]models.WebhookSubscription, 0, len(s.webhooks)),
-		Templates:       make([]models.Template, 0, len(s.templates)),
+		APIKeys:            make([]models.APIKey, 0, len(s.apiKeys)),
+		Webhooks:           make([]models.WebhookSubscription, 0, len(s.webhooks)),
+		Templates:          make([]models.Template, 0, len(s.templates)),
+		Mailboxes:          make([]models.Mailbox, 0, len(s.mailboxes)),
+		MailboxPools:       make([]models.MailboxPool, 0, len(s.mailboxPools)),
+		MailboxAssignments: make([]models.MailboxAssignment, 0, len(s.mailboxAssignments)),
+		SystemSettings:     s.systemSettings,
+		Playbooks:          make([]models.AutomationPlaybook, 0, len(s.playbooks)),
 	}
 	for _, d := range s.domains {
 		state.Domains = append(state.Domains, d)
@@ -416,6 +466,18 @@ func (s *Store) saveLocked() {
 	}
 	for _, tmpl := range s.templates {
 		state.Templates = append(state.Templates, tmpl)
+	}
+	for _, m := range s.mailboxes {
+		state.Mailboxes = append(state.Mailboxes, m)
+	}
+	for _, p := range s.mailboxPools {
+		state.MailboxPools = append(state.MailboxPools, p)
+	}
+	for _, a := range s.mailboxAssignments {
+		state.MailboxAssignments = append(state.MailboxAssignments, a)
+	}
+	for _, pb := range s.playbooks {
+		state.Playbooks = append(state.Playbooks, pb)
 	}
 
 	dir := filepath.Dir(s.filePath)
@@ -2573,6 +2635,67 @@ func (s *Store) UpdateCampaign(c models.Campaign) (*models.Campaign, error) {
 	if c.TemplateID != "" {
 		existing.TemplateID = c.TemplateID
 	}
+	if c.SenderMode != "" {
+		existing.SenderMode = c.SenderMode
+	}
+	if c.MailboxPoolID != "" {
+		existing.MailboxPoolID = c.MailboxPoolID
+	}
+	if c.RotationStrategy != "" {
+		existing.RotationStrategy = c.RotationStrategy
+	}
+	if len(c.Steps) > 0 {
+		existing.Steps = c.Steps
+	}
+	if c.CategoryTag != "" {
+		existing.CategoryTag = c.CategoryTag
+	}
+	if c.Priority != "" {
+		existing.Priority = c.Priority
+	}
+	if c.ReturnPathDomain != "" {
+		existing.ReturnPathDomain = c.ReturnPathDomain
+	}
+	if c.SendWindowStart != "" {
+		existing.SendWindowStart = c.SendWindowStart
+	}
+	if c.SendWindowEnd != "" {
+		existing.SendWindowEnd = c.SendWindowEnd
+	}
+	if c.SendWindowDays != "" {
+		existing.SendWindowDays = c.SendWindowDays
+	}
+	if c.JitterMinSeconds > 0 {
+		existing.JitterMinSeconds = c.JitterMinSeconds
+	}
+	if c.JitterMaxSeconds > 0 {
+		existing.JitterMaxSeconds = c.JitterMaxSeconds
+	}
+	if c.DailyCap > 0 {
+		existing.DailyCap = c.DailyCap
+	}
+	if c.CustomHeaders != nil {
+		existing.CustomHeaders = c.CustomHeaders
+	}
+	existing.TrackOpens = c.TrackOpens
+	existing.TrackClicks = c.TrackClicks
+	if c.TrackingDomain != "" {
+		existing.TrackingDomain = c.TrackingDomain
+	}
+	if c.CustomFooterHTML != "" {
+		existing.CustomFooterHTML = c.CustomFooterHTML
+	}
+	if c.UnsubscribeURL != "" {
+		existing.UnsubscribeURL = c.UnsubscribeURL
+	}
+	if c.UnsubscribeText != "" {
+		existing.UnsubscribeText = c.UnsubscribeText
+	}
+	if c.CompanyAddress != "" {
+		existing.CompanyAddress = c.CompanyAddress
+	}
+	existing.EnableOneClick = c.EnableOneClick
+	existing.EnableBranding = c.EnableBranding
 
 	s.campaigns[c.ID] = existing
 	s.saveLocked()
@@ -2684,6 +2807,39 @@ func (s *Store) DispatchCampaign(req models.CampaignDispatchRequest) (*models.Ca
 			"campaign_id": cmp.ID,
 		}
 
+		// Determine Sender (Single Sender vs Mailbox Rotation Pool)
+		activeFromName := cmp.FromName
+		activeFromEmail := cmp.FromEmail
+		activeDomain := senderDomain
+
+		if cmp.SenderMode == "pool" && s.systemSettings.MailboxRotationEnabled && cmp.MailboxPoolID != "" {
+			mb, deferReason, err := s.selectMailboxForRecipientLocked(cmp.MailboxPoolID, cmp.ID, cleanRecip)
+			if err != nil {
+				// Master requirement: If no eligible mailbox exists: Do not bypass restrictions. Place into deferred state.
+				s.messages = append(s.messages, models.QueuedMessage{
+					ID:          "def-" + msgID,
+					Sender:      cmp.FromEmail,
+					Recipient:   cleanRecip,
+					Subject:     fmt.Sprintf("[%s] %s", deferReason, cmp.Subject),
+					Domain:      destDomain,
+					EgressIP:    pool,
+					Status:      "temporarily_delayed",
+					Attempts:    1,
+					LastAttempt: time.Now().UTC(),
+					CreatedAt:   time.Now().UTC(),
+				})
+				continue
+			}
+			activeFromName = mb.DisplayName
+			activeFromEmail = mb.Email
+			if mb.Domain != "" {
+				activeDomain = mb.Domain
+			}
+		}
+
+		vars["sender_name"] = activeFromName
+		vars["sender_email"] = activeFromEmail
+
 		subjectText := cmp.Subject
 		body := cmp.BodyHTML
 		if cmp.TemplateID != "" {
@@ -2703,14 +2859,69 @@ func (s *Store) DispatchCampaign(req models.CampaignDispatchRequest) (*models.Ca
 		renderedSubject := renderTemplateString(subjectText, vars)
 		renderedBody := renderTemplateString(body, vars)
 
+		// Append Custom Footer, Unsubscribe, and Company Address if configured
+		var footerBuf bytes.Buffer
+		hasFooterContent := false
+
+		if cmp.CustomFooterHTML != "" {
+			hasFooterContent = true
+			footerBuf.WriteString(fmt.Sprintf("<div class=\"zmail-custom-footer\" style=\"margin-top:28px;\">%s</div>", renderTemplateString(cmp.CustomFooterHTML, vars)))
+		}
+
+		unsubText := "Unsubscribe"
+		if cmp.UnsubscribeText != "" {
+			unsubText = cmp.UnsubscribeText
+		}
+		unsubURL := fmt.Sprintf("https://%s/unsubscribe?id=%s", activeDomain, cleanRecip)
+		if cmp.UnsubscribeURL != "" {
+			unsubURL = cmp.UnsubscribeURL
+		}
+
+		footerBuf.WriteString("<div style=\"margin-top:20px;padding-top:14px;border-top:1px solid #333;font-size:11px;color:#888;font-family:sans-serif;\">")
+		footerBuf.WriteString(fmt.Sprintf("<p><a href=\"%s\" style=\"color:#ff69b4;text-decoration:underline;\">%s</a></p>", unsubURL, unsubText))
+
+		companyAddr := cmp.CompanyAddress
+		if companyAddr == "" && s.systemSettings.CompanyAddress != "" {
+			companyAddr = s.systemSettings.CompanyAddress
+		}
+		if companyAddr != "" {
+			hasFooterContent = true
+			footerBuf.WriteString(fmt.Sprintf("<p style=\"color:#666;font-size:10px;\">%s</p>", companyAddr))
+		}
+
+		if cmp.EnableBranding {
+			footerBuf.WriteString("<p style=\"color:#555;font-size:10px;\">Delivered via ZMAIL High-Velocity MTA</p>")
+		}
+		footerBuf.WriteString("</div>")
+
+		if hasFooterContent || cmp.EnableBranding {
+			renderedBody += footerBuf.String()
+		}
+
 		// Build RFC822 MIME message
 		var msgBuf bytes.Buffer
-		msgBuf.WriteString(fmt.Sprintf("From: \"%s\" <%s>\r\n", cmp.FromName, cmp.FromEmail))
+		msgBuf.WriteString(fmt.Sprintf("From: \"%s\" <%s>\r\n", activeFromName, activeFromEmail))
 		msgBuf.WriteString(fmt.Sprintf("To: <%s>\r\n", cleanRecip))
+		if cmp.ReplyTo != "" {
+			msgBuf.WriteString(fmt.Sprintf("Reply-To: <%s>\r\n", cmp.ReplyTo))
+		}
 		msgBuf.WriteString(fmt.Sprintf("Subject: %s\r\n", renderedSubject))
 		msgBuf.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z)))
-		msgBuf.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", msgID, senderDomain))
-		msgBuf.WriteString(fmt.Sprintf("List-Unsubscribe: <mailto:unsubscribe@%s>, <https://%s/unsubscribe?id=%s>\r\n", senderDomain, senderDomain, cleanRecip))
+		msgBuf.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", msgID, activeDomain))
+
+		// RFC 8058 One-Click List-Unsubscribe compliance headers
+		msgBuf.WriteString(fmt.Sprintf("List-Unsubscribe: <%s>, <mailto:unsub@%s>\r\n", unsubURL, activeDomain))
+		if cmp.EnableOneClick || s.systemSettings.OneClickUnsubscribe {
+			msgBuf.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+		}
+
+		// Custom Headers
+		for hk, hv := range cmp.CustomHeaders {
+			if hk != "" && hv != "" {
+				msgBuf.WriteString(fmt.Sprintf("%s: %s\r\n", hk, hv))
+			}
+		}
+
 		msgBuf.WriteString(fmt.Sprintf("X-Campaign-ID: %s\r\n", cmp.ID))
 		msgBuf.WriteString(fmt.Sprintf("X-Pool: %s\r\n", pool))
 		msgBuf.WriteString("MIME-Version: 1.0\r\n")

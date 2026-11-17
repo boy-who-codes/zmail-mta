@@ -583,6 +583,28 @@ export async function fetchWarmupStats() {
 
 // --- CAMPAIGN OPERATIONS & REAL DISPATCH API ---
 
+export interface CampaignStep {
+  id?: string;
+  step_number: number;
+  title?: string;
+  subject: string;
+  body_html: string;
+  body_preview?: string;
+  delay_days: number;
+  delay_hours: number;
+  send_days?: "all_days" | "business_days";
+  trigger_condition: "immediate" | "no_reply" | "no_open" | "opened_no_click" | "always";
+  is_threaded_reply: boolean;
+  created_at?: string;
+}
+
+export interface IPPool {
+  id: string;
+  name: string;
+  type?: string;
+  ips?: any[];
+}
+
 export interface CampaignPayload {
   id?: string;
   name: string;
@@ -590,6 +612,9 @@ export interface CampaignPayload {
   from_name: string;
   from_email: string;
   reply_to?: string;
+  return_path_domain?: string;
+  category_tag?: string;
+  priority?: "high" | "normal" | "bulk";
   audience: string;
   recipient_count?: number;
   status?: string;
@@ -598,6 +623,26 @@ export interface CampaignPayload {
   ip_pool?: string;
   recipients?: string[];
   template_id?: string;
+  steps?: CampaignStep[];
+  sender_mode?: "single" | "pool";
+  mailbox_pool_id?: string;
+  rotation_strategy?: "round_robin" | "weighted_round_robin" | "least_recently_used" | "least_utilized";
+  send_window_start?: string;
+  send_window_end?: string;
+  send_window_days?: string;
+  jitter_min_seconds?: number;
+  jitter_max_seconds?: number;
+  daily_cap?: number;
+  custom_headers?: Record<string, string>;
+  track_opens?: boolean;
+  track_clicks?: boolean;
+  tracking_domain?: string;
+  custom_footer_html?: string;
+  unsubscribe_url?: string;
+  unsubscribe_text?: string;
+  company_address?: string;
+  enable_one_click?: boolean;
+  enable_branding?: boolean;
 }
 
 export async function fetchCampaigns() {
@@ -1074,5 +1119,207 @@ export async function renderTemplate(req: RenderTemplateRequest): Promise<Render
 export async function fetchDeliverabilityHealth(): Promise<DeliverabilityHealthReport> {
   const res = await fetch(`${API_BASE}/api/v1/deliverability/health`);
   if (!res.ok) throw new Error("Failed to fetch deliverability health report");
+  return res.json();
+}
+
+// --- MAILBOXES, POOLS & ROTATION API ---
+
+export interface Mailbox {
+  id: string;
+  email: string;
+  display_name: string;
+  first_name?: string;
+  last_name?: string;
+  department?: string;
+  domain: string;
+  dkim_selector?: string;
+  ip_pool_id: string;
+  daily_limit: number;
+  hourly_limit: number;
+  min_interval_seconds: number;
+  daily_sent: number;
+  hourly_sent: number;
+  last_sent_at?: string;
+  enabled: boolean;
+  is_verified: boolean;
+  health_status: "excellent" | "good" | "warning" | "suspended";
+  weight: number;
+  credential_ref?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_user?: string;
+  tls_mode?: string;
+  signature_html?: string;
+  warmup_enabled: boolean;
+  bounce_rate: number;
+  spam_rate: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailboxPool {
+  id: string;
+  name: string;
+  description: string;
+  strategy: "round_robin" | "weighted_round_robin" | "least_recently_used" | "least_utilized";
+  mailbox_ids: string[];
+  daily_capacity: number;
+  hourly_capacity: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailboxRotationSimulation {
+  pool_id: string;
+  strategy: string;
+  assignments: {
+    recipient: string;
+    mailbox_id: string;
+    sender_email: string;
+    sender_name: string;
+    eligible: boolean;
+    reason?: string;
+  }[];
+  summary_stats: Record<string, number>;
+}
+
+export interface AutomationPlaybook {
+  id: string;
+  name: string;
+  description: string;
+  category: "b2b_sales" | "saas_onboarding" | "product_launch" | "list_hygiene";
+  target_audience: string;
+  estimated_days: number;
+  steps: CampaignStep[];
+  created_at: string;
+}
+
+export interface SystemSettings {
+  mailbox_rotation_enabled: boolean;
+  enforce_sender_continuity: boolean;
+  enforce_min_interval: boolean;
+  default_rotation_strategy: string;
+  default_ip_pool: string;
+  require_verified_domain: boolean;
+  one_click_unsubscribe: boolean;
+  custom_legal_footer: string;
+  company_address: string;
+  branding_enabled: boolean;
+}
+
+export async function fetchMailboxes(): Promise<Mailbox[]> {
+  const res = await fetch(`${API_BASE}/api/v1/mailboxes`);
+  if (!res.ok) throw new Error("Failed to fetch mailboxes");
+  return res.json();
+}
+
+export async function addMailbox(mailbox: Partial<Mailbox>): Promise<Mailbox> {
+  const res = await fetch(`${API_BASE}/api/v1/mailboxes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mailbox),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to add mailbox");
+  }
+  return res.json();
+}
+
+export async function updateMailbox(mailbox: Partial<Mailbox>): Promise<Mailbox> {
+  const res = await fetch(`${API_BASE}/api/v1/mailboxes`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mailbox),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update mailbox");
+  }
+  return res.json();
+}
+
+export async function deleteMailbox(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/mailboxes?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete mailbox");
+}
+
+export async function fetchMailboxPools(): Promise<MailboxPool[]> {
+  const res = await fetch(`${API_BASE}/api/v1/mailbox-pools`);
+  if (!res.ok) throw new Error("Failed to fetch mailbox pools");
+  return res.json();
+}
+
+export async function addMailboxPool(pool: Partial<MailboxPool>): Promise<MailboxPool> {
+  const res = await fetch(`${API_BASE}/api/v1/mailbox-pools`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pool),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to add mailbox pool");
+  }
+  return res.json();
+}
+
+export async function updateMailboxPool(pool: Partial<MailboxPool>): Promise<MailboxPool> {
+  const res = await fetch(`${API_BASE}/api/v1/mailbox-pools`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pool),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update mailbox pool");
+  }
+  return res.json();
+}
+
+export async function deleteMailboxPool(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/mailbox-pools?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete mailbox pool");
+}
+
+export async function simulateMailboxRotation(poolId: string, strategy?: string, recipients?: string[]): Promise<MailboxRotationSimulation> {
+  const res = await fetch(`${API_BASE}/api/v1/mailbox-pools/simulate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pool_id: poolId, strategy, recipients }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to simulate mailbox rotation");
+  }
+  return res.json();
+}
+
+export async function fetchPlaybooks(): Promise<AutomationPlaybook[]> {
+  const res = await fetch(`${API_BASE}/api/v1/playbooks`);
+  if (!res.ok) throw new Error("Failed to fetch automation playbooks");
+  return res.json();
+}
+
+export async function fetchSystemSettings(): Promise<SystemSettings> {
+  const res = await fetch(`${API_BASE}/api/v1/settings/system`);
+  if (!res.ok) throw new Error("Failed to fetch system settings");
+  return res.json();
+}
+
+export async function updateSystemSettings(settings: Partial<SystemSettings>): Promise<SystemSettings> {
+  const res = await fetch(`${API_BASE}/api/v1/settings/system`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update system settings");
+  }
   return res.json();
 }

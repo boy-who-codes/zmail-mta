@@ -46,9 +46,11 @@ import { IpPoolsApp } from "../apps/IpPoolsApp";
 import { TerminalApp } from "../apps/TerminalApp";
 import { SystemSettingsApp } from "../apps/SystemSettingsApp";
 import { SmtpConnectApp } from "../apps/SmtpConnectApp";
+import { MailboxesApp } from "../apps/MailboxesApp";
 
 const APP_COMPONENT_MAP: Record<string, React.FC> = {
   campaigns: CampaignsApp,
+  mailboxes: MailboxesApp,
   workflows: WorkflowsApp,
   contacts: ContactsApp,
   suppressions: SuppressionApp,

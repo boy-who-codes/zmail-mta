@@ -1,5 +1,6 @@
 export type AppId =
   | "campaigns"
+  | "mailboxes"
   | "workflows"
   | "analytics"
   | "contacts"

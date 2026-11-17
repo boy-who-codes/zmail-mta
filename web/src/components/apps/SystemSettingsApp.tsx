@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Palette,
   Shield,
@@ -16,9 +16,13 @@ import {
   ZapOff,
   Type,
   Layout,
-  Focus
+  Focus,
+  Mailbox,
+  Lock,
+  Save,
 } from "lucide-react";
 import { useWindowManager, WallpaperId } from "../../context/WindowManagerContext";
+import { fetchSystemSettings, updateSystemSettings, SystemSettings } from "../../lib/api";
 
 const WALLPAPERS: { id: WallpaperId; name: string; desc: string; previewBg: string; borderAccent: string }[] = [
   {
@@ -67,8 +71,38 @@ const WALLPAPERS: { id: WallpaperId; name: string; desc: string; previewBg: stri
 
 export const SystemSettingsApp: React.FC = () => {
   const [selectedSection, setSelectedSection] = useState<
-    "wallpaper" | "accessibility" | "appearance" | "security" | "api" | "about"
+    "wallpaper" | "accessibility" | "appearance" | "security" | "api" | "rotation" | "about"
   >("wallpaper");
+
+  const [sysSettings, setSysSettings] = useState<SystemSettings>({
+    mailbox_rotation_enabled: true,
+    enforce_sender_continuity: true,
+    enforce_min_interval: true,
+    default_rotation_strategy: "least_utilized",
+    default_ip_pool: "default",
+    require_verified_domain: true,
+    one_click_unsubscribe: true,
+    custom_legal_footer: "100 Enterprise Way, Suite 400, San Francisco, CA 94107",
+    company_address: "ZMAIL Infrastructure Group • 100 Enterprise Way, SF, CA",
+    branding_enabled: true,
+  });
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  useEffect(() => {
+    fetchSystemSettings()
+      .then((s) => setSysSettings(s))
+      .catch(() => {});
+  }, []);
+
+  const handleSaveSettings = async () => {
+    try {
+      await updateSystemSettings(sysSettings);
+      setSettingsSaved(true);
+      setTimeout(() => setSettingsSaved(false), 3000);
+    } catch (err) {
+      alert("Failed to save settings: " + err);
+    }
+  };
 
   const {
     wallpaper,
@@ -131,6 +165,16 @@ export const SystemSettingsApp: React.FC = () => {
         >
           <Key className="w-3.5 h-3.5 text-[#eab308]" />
           <span>Sending Keys & Spool</span>
+        </button>
+
+        <button
+          onClick={() => setSelectedSection("rotation")}
+          className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors ${
+            selectedSection === "rotation" ? "bg-[#18191a] text-[#f7f8f8]" : "text-[#8a8f98] hover:bg-[#141516]"
+          }`}
+        >
+          <Sliders className="w-3.5 h-3.5 text-[#ff69b4]" />
+          <span>Mailbox Rotation &amp; Policies</span>
         </button>
 
         <button
@@ -432,7 +476,7 @@ export const SystemSettingsApp: React.FC = () => {
           <div className="space-y-3 max-w-lg">
             <h3 className="text-sm font-semibold text-[#f7f8f8]">Sending Keys & Spool Endpoints</h3>
             <p className="text-[11px] text-[#8a8f98]">
-              Connection parameters for SMTP injection, KumoMTA spool, and REST APIs.
+              Connection parameters for SMTP injection, high-velocity spool, and REST APIs.
             </p>
             <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-2">
               <div className="flex justify-between text-[11px]">
@@ -444,10 +488,157 @@ export const SystemSettingsApp: React.FC = () => {
                 <span className="text-[#f7f8f8] font-mono">http://localhost:8080/api/v1</span>
               </div>
               <div className="flex justify-between text-[11px]">
-                <span className="text-[#d0d6e0]">KumoMTA HTTP Port:</span>
+                <span className="text-[#d0d6e0]">ZMAIL Engine HTTP Port:</span>
                 <span className="text-[#f7f8f8] font-mono">http://localhost:8000</span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* MAILBOX ROTATION & POLICIES SECTION */}
+        {selectedSection === "rotation" && (
+          <div className="space-y-4 max-w-lg">
+            <div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#f7f8f8]">Mailbox Rotation &amp; Delivery Policies</h3>
+                  <p className="text-[11px] text-[#8a8f98] mt-0.5">
+                    Cluster-wide sending rules, thread consistency, and anti-spam compliance guards.
+                  </p>
+                </div>
+                {settingsSaved && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#27a644]/10 text-[#27a644] border border-[#27a644]/30 font-semibold flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Saved
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Master Toggle */}
+            <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-white text-xs">Automated Mailbox Rotation &amp; Pooling</div>
+                <div className="text-[11px] text-[#8a8f98] mt-0.5">
+                  Allows campaigns to rotate across verified sender pools instead of a single From address.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSysSettings({ ...sysSettings, mailbox_rotation_enabled: !sysSettings.mailbox_rotation_enabled })
+                }
+                className={`w-11 h-6 rounded-full transition-colors relative flex items-center px-1 shrink-0 ${
+                  sysSettings.mailbox_rotation_enabled ? "bg-[#ff69b4]" : "bg-[#23252a]"
+                }`}
+              >
+                <div
+                  className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                    sysSettings.mailbox_rotation_enabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Sender Continuity Toggle */}
+            <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-white text-xs flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-[#27a644]" />
+                  <span>Enforce Sender Continuity on Follow-up Steps</span>
+                </div>
+                <div className="text-[11px] text-[#8a8f98] mt-0.5">
+                  Strictly prohibits mailbox rotation on follow-up emails. Locks sender to Step 1 origin to preserve thread context.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSysSettings({ ...sysSettings, enforce_sender_continuity: !sysSettings.enforce_sender_continuity })
+                }
+                className={`w-11 h-6 rounded-full transition-colors relative flex items-center px-1 shrink-0 ${
+                  sysSettings.enforce_sender_continuity ? "bg-[#27a644]" : "bg-[#23252a]"
+                }`}
+              >
+                <div
+                  className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                    sysSettings.enforce_sender_continuity ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Min Interval Enforcement */}
+            <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-white text-xs">Enforce Minimum Sending Interval</div>
+                <div className="text-[11px] text-[#8a8f98] mt-0.5">
+                  Prevents back-to-back bursts from the same mailbox (throttles to 60–90 seconds between sends).
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSysSettings({ ...sysSettings, enforce_min_interval: !sysSettings.enforce_min_interval })
+                }
+                className={`w-11 h-6 rounded-full transition-colors relative flex items-center px-1 shrink-0 ${
+                  sysSettings.enforce_min_interval ? "bg-[#ff69b4]" : "bg-[#23252a]"
+                }`}
+              >
+                <div
+                  className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                    sysSettings.enforce_min_interval ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Mandatory RFC 8058 One-Click Unsubscribe Header */}
+            <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-white text-xs">RFC 8058 One-Click List-Unsubscribe Header</div>
+                <div className="text-[11px] text-[#8a8f98] mt-0.5">
+                  Injects mandatory List-Unsubscribe=One-Click headers required by Google and Yahoo post-2024.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSysSettings({ ...sysSettings, one_click_unsubscribe: !sysSettings.one_click_unsubscribe })
+                }
+                className={`w-11 h-6 rounded-full transition-colors relative flex items-center px-1 shrink-0 ${
+                  sysSettings.one_click_unsubscribe ? "bg-[#27a644]" : "bg-[#23252a]"
+                }`}
+              >
+                <div
+                  className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                    sysSettings.one_click_unsubscribe ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Default Company Physical Address */}
+            <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-2">
+              <label className="text-[11px] font-semibold text-white block">
+                Default CAN-SPAM Physical Postal Address
+              </label>
+              <input
+                type="text"
+                value={sysSettings.company_address}
+                onChange={(e) => setSysSettings({ ...sysSettings, company_address: e.target.value })}
+                placeholder="100 Enterprise Way, Suite 400, San Francisco, CA 94107"
+                className="w-full bg-[#141720] border border-[#262c3b] rounded-xl px-3 py-2 text-xs text-white font-mono focus:border-[#ff69b4]/60 focus:outline-none"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSaveSettings}
+              className="w-full py-2.5 rounded-xl bg-[#ff69b4] hover:bg-[#ff52a5] text-black font-semibold text-xs shadow-md shadow-[#ff69b4]/20 flex items-center justify-center gap-2"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Save Cluster Sending Policies</span>
+            </button>
           </div>
         )}
 

@@ -118,6 +118,25 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/campaigns", s.handleDeleteCampaign)
 	s.mux.HandleFunc("POST /api/v1/campaigns/dispatch", s.handleDispatchCampaign)
 
+	// Mailbox & Mailbox Rotation Endpoints (Phase 3)
+	s.mux.HandleFunc("GET /api/v1/mailboxes", s.handleGetMailboxes)
+	s.mux.HandleFunc("POST /api/v1/mailboxes", s.handleAddMailbox)
+	s.mux.HandleFunc("PUT /api/v1/mailboxes", s.handleUpdateMailbox)
+	s.mux.HandleFunc("DELETE /api/v1/mailboxes", s.handleDeleteMailbox)
+
+	s.mux.HandleFunc("GET /api/v1/mailbox-pools", s.handleGetMailboxPools)
+	s.mux.HandleFunc("POST /api/v1/mailbox-pools", s.handleAddMailboxPool)
+	s.mux.HandleFunc("PUT /api/v1/mailbox-pools", s.handleUpdateMailboxPool)
+	s.mux.HandleFunc("DELETE /api/v1/mailbox-pools", s.handleDeleteMailboxPool)
+	s.mux.HandleFunc("POST /api/v1/mailbox-pools/simulate", s.handleSimulateMailboxRotation)
+
+	// Automation Sequence Playbooks
+	s.mux.HandleFunc("GET /api/v1/playbooks", s.handleGetPlaybooks)
+
+	// Cluster System Settings & Policies
+	s.mux.HandleFunc("GET /api/v1/settings/system", s.handleGetSystemSettings)
+	s.mux.HandleFunc("PUT /api/v1/settings/system", s.handleUpdateSystemSettings)
+
 	// Audience & Contacts Directory Endpoints
 	s.mux.HandleFunc("GET /api/v1/contacts", s.handleGetContacts)
 	s.mux.HandleFunc("POST /api/v1/contacts", s.handleAddContact)

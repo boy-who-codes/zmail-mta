@@ -14,6 +14,18 @@ export const APPS: AppDefinition[] = [
     description: "Full CRUD campaign manager: Create, schedule, inspect, pause, edit, duplicate, and delete email broadcasts",
   },
   {
+    id: "mailboxes",
+    title: "Mailbox Management & Pools",
+    shortTitle: "Mailbox Pools",
+    iconName: "Mailbox",
+    category: "Delivery",
+    defaultWidth: 1080,
+    defaultHeight: 700,
+    minWidth: 840,
+    minHeight: 520,
+    description: "Automated sender rotation, mailbox pools, daily/hourly quotas, and thread continuity",
+  },
+  {
     id: "workflows",
     title: "Workflow Sequences & DAG Automations",
     shortTitle: "Workflows",
