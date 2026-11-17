@@ -1,5 +1,5 @@
 # MailOps KumoMTA Outbound Sources & Multi-IP Pools Configuration
-# Generated: 2026-11-17T17:52:33Z
+# Generated: 2026-11-17T18:38:24Z
 
 [source."default"]
 source_address = "0.0.0.0"

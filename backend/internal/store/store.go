@@ -52,6 +52,7 @@ type PersistentState struct {
 	MailboxAssignments []models.MailboxAssignment   `json:"mailbox_assignments"`
 	SystemSettings     models.SystemSettings        `json:"system_settings"`
 	Playbooks          []models.AutomationPlaybook  `json:"playbooks"`
+	SMTPCredentials    []models.SMTPCredential      `json:"smtp_credentials"`
 }
 
 // Store manages transactional and operational state
@@ -85,6 +86,7 @@ type Store struct {
 	mailboxRotationIndex map[string]int
 	systemSettings       models.SystemSettings
 	playbooks            map[string]models.AutomationPlaybook
+	smtpCredentials      map[string]models.SMTPCredential
 }
 
 // NewStore initializes a clean, unseeded store backed by persistent disk storage
@@ -121,6 +123,7 @@ func NewStore(dataFile string) *Store {
 		mailboxAssignments:   make(map[string]models.MailboxAssignment),
 		mailboxRotationIndex: make(map[string]int),
 		playbooks:            make(map[string]models.AutomationPlaybook),
+		smtpCredentials:      make(map[string]models.SMTPCredential),
 		systemSettings: models.SystemSettings{
 			MailboxRotationEnabled:  true,
 			EnforceSenderContinuity: true,
@@ -139,6 +142,7 @@ func NewStore(dataFile string) *Store {
 	s.initWarmupPlansLocked()
 	s.initDefaultPlaybooksLocked()
 	s.initDefaultMailboxesLocked()
+	s.initDefaultSMTPCredentialsLocked()
 
 	// Load existing persistent state if file exists
 	if data, err := os.ReadFile(dataFile); err == nil {
@@ -212,6 +216,12 @@ func NewStore(dataFile string) *Store {
 			}
 			for _, pb := range state.Playbooks {
 				s.playbooks[pb.ID] = pb
+			}
+			for _, sc := range state.SMTPCredentials {
+				s.smtpCredentials[sc.ID] = sc
+			}
+			if len(s.smtpCredentials) == 0 {
+				s.initDefaultSMTPCredentialsLocked()
 			}
 			s.inboundMessages = state.InboundMessages
 			s.bounces = state.Bounces
@@ -424,6 +434,7 @@ func (s *Store) saveLocked() {
 		MailboxAssignments: make([]models.MailboxAssignment, 0, len(s.mailboxAssignments)),
 		SystemSettings:     s.systemSettings,
 		Playbooks:          make([]models.AutomationPlaybook, 0, len(s.playbooks)),
+		SMTPCredentials:    make([]models.SMTPCredential, 0, len(s.smtpCredentials)),
 	}
 	for _, d := range s.domains {
 		state.Domains = append(state.Domains, d)
@@ -478,6 +489,9 @@ func (s *Store) saveLocked() {
 	}
 	for _, pb := range s.playbooks {
 		state.Playbooks = append(state.Playbooks, pb)
+	}
+	for _, sc := range s.smtpCredentials {
+		state.SMTPCredentials = append(state.SMTPCredentials, sc)
 	}
 
 	dir := filepath.Dir(s.filePath)

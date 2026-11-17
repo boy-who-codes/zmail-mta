@@ -19,14 +19,25 @@ import {
   AlertCircle,
   CheckCircle2,
   ExternalLink,
-  Laptop
+  Laptop,
+  Key,
+  Eye,
+  EyeOff,
+  UserCheck
 } from "lucide-react";
 import {
   fetchSmtpInfo,
   fetchRelayWhitelist,
   addRelayWhitelist,
   deleteRelayWhitelist,
-  fetchIncomingConnections
+  fetchIncomingConnections,
+  fetchSmtpCredentials,
+  addSmtpCredential,
+  deleteSmtpCredential,
+  toggleSmtpCredential,
+  SMTPCredential,
+  fetchIPPools,
+  IPPool
 } from "../../lib/api";
 
 interface HostInfo {
@@ -59,10 +70,22 @@ interface ConnectionLog {
 }
 
 export const SmtpConnectApp: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"settings" | "snippets" | "whitelist" | "connections">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "credentials" | "snippets" | "whitelist" | "connections">("settings");
   const [hostInfo, setHostInfo] = useState<HostInfo | null>(null);
   const [clientHost, setClientHost] = useState<string>("localhost");
   const [copiedId, setCopiedId] = useState<string>("");
+
+  // SMTP Credentials state
+  const [credentials, setCredentials] = useState<SMTPCredential[]>([]);
+  const [pools, setPools] = useState<IPPool[]>([]);
+  const [showPassMap, setShowPassMap] = useState<Record<string, boolean>>({});
+  const [isCredModalOpen, setIsCredModalOpen] = useState(false);
+  const [newCredUser, setNewCredUser] = useState("");
+  const [newCredPass, setNewCredPass] = useState("");
+  const [newCredDesc, setNewCredDesc] = useState("");
+  const [newCredPool, setNewCredPool] = useState("default");
+  const [isAddingCred, setIsAddingCred] = useState(false);
+  const [credError, setCredError] = useState("");
 
   // Whitelist state
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
@@ -90,14 +113,18 @@ export const SmtpConnectApp: React.FC = () => {
       if (typeof window !== "undefined") {
         setClientHost(window.location.hostname || "localhost");
       }
-      const [info, wl, conn] = await Promise.all([
+      const [info, wl, conn, creds, poolList] = await Promise.all([
         fetchSmtpInfo().catch(() => null),
         fetchRelayWhitelist().catch(() => []),
         fetchIncomingConnections().catch(() => []),
+        fetchSmtpCredentials().catch(() => []),
+        fetchIPPools().catch(() => []),
       ]);
       if (info) setHostInfo(info);
       if (Array.isArray(wl)) setWhitelist(wl);
       if (Array.isArray(conn)) setConnections(conn);
+      if (Array.isArray(creds)) setCredentials(creds);
+      if (Array.isArray(poolList)) setPools(poolList);
     } catch {
       // ignore
     }
@@ -144,6 +171,55 @@ export const SmtpConnectApp: React.FC = () => {
     }
   };
 
+  const handleAddCredential = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCredUser.trim()) return;
+    setIsAddingCred(true);
+    setCredError("");
+    try {
+      const created = await addSmtpCredential({
+        username: newCredUser.trim(),
+        password: newCredPass.trim() || undefined,
+        description: newCredDesc.trim() || "Outlook / ESMTP Client",
+        pool_id: newCredPool || "default",
+      });
+      setNewCredUser("");
+      setNewCredPass("");
+      setNewCredDesc("");
+      setIsCredModalOpen(false);
+      const updated = await fetchSmtpCredentials();
+      setCredentials(updated);
+      if (created.password) {
+        setShowPassMap((prev) => ({ ...prev, [created.id]: true }));
+      }
+    } catch (err: any) {
+      setCredError(err.message || "Failed to create credential");
+    } finally {
+      setIsAddingCred(false);
+    }
+  };
+
+  const handleDeleteCredential = async (id: string) => {
+    if (!confirm("Are you sure you want to revoke and delete this SMTP credential?")) return;
+    try {
+      await deleteSmtpCredential(id);
+      const updated = await fetchSmtpCredentials();
+      setCredentials(updated);
+    } catch (err: any) {
+      alert(err.message || "Failed to delete credential");
+    }
+  };
+
+  const handleToggleCredential = async (id: string, currentEnabled: boolean) => {
+    try {
+      await toggleSmtpCredential(id, !currentEnabled);
+      const updated = await fetchSmtpCredentials();
+      setCredentials(updated);
+    } catch (err: any) {
+      alert(err.message || "Failed to toggle credential");
+    }
+  };
+
   const effectiveHost = hostInfo?.detected_host || clientHost || "127.0.0.1";
   const primaryPort = 2525;
 
@@ -170,6 +246,21 @@ export const SmtpConnectApp: React.FC = () => {
           >
             <Server className="w-3.5 h-3.5 text-[#3b9eff]" />
             <span>Connection Parameters</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("credentials")}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left transition-colors cursor-pointer ${
+              activeTab === "credentials" ? "bg-[#18191a] text-[#f7f8f8] font-medium" : "text-[#8a8f98] hover:bg-[#141516]"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Key className="w-3.5 h-3.5 text-[#ff69b4]" />
+              <span>SMTP Credentials</span>
+            </div>
+            <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#18191a] text-[#8a8f98] font-mono">
+              {credentials.length}
+            </span>
           </button>
 
           <button
@@ -289,14 +380,107 @@ export const SmtpConnectApp: React.FC = () => {
               <div className="p-3 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-1">
                 <div className="text-[10px] font-mono uppercase text-[#62666d]">Authentication Method</div>
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs text-[#f7f8f8] font-bold">IP Whitelist (Zero Auth)</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#3b9eff]/20 text-[#3b9eff] font-mono">
-                    Instant Relay
+                  <span className="font-mono text-xs text-[#f7f8f8] font-bold">SMTP AUTH & IP Relay</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#ff69b4]/20 text-[#ff69b4] font-mono">
+                    Dual Mode
                   </span>
                 </div>
-                <div className="text-[10px] text-[#8a8f98]">Add sender IP to Whitelist tab for instant relay</div>
+                <div className="text-[10px] text-[#8a8f98]">Use username/password or IP Whitelist</div>
               </div>
             </div>
+
+            {/* Outlook & Email Client Quick Connect Card */}
+            {credentials.length > 0 && (
+              <div className="p-4 rounded-xl bg-[#141518] border border-[#2b2d35] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Laptop className="w-4 h-4 text-[#ff69b4]" />
+                    <span className="font-semibold text-[#f7f8f8]">Microsoft Outlook & Email Client Connection</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const c = credentials[0];
+                      const allInfo = `SMTP Server: ${effectiveHost}\nPort: 587 (or 2525)\nSecurity: STARTTLS\nUsername: ${c.username}\nPassword: ${c.password || "zmail_live_sec_2026"}`;
+                      copyToClipboard(allInfo, "outlook-all");
+                    }}
+                    className="px-2.5 py-1 rounded bg-[#23252a] hover:bg-[#2e3137] text-[11px] font-mono text-[#f7f8f8] flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {copiedId === "outlook-all" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5 text-[#8a8f98]" />}
+                    <span>{copiedId === "outlook-all" ? "Copied!" : "Copy All for Outlook"}</span>
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-[#8a8f98]">
+                  Enter these exact credentials in Microsoft Outlook, Apple Mail, Thunderbird, or your CRM under <strong>Outgoing Mail Server (SMTP)</strong>.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] uppercase text-[#62666d]">SMTP Server</div>
+                      <div className="text-[#f7f8f8] font-bold">{effectiveHost}</div>
+                    </div>
+                    <button onClick={() => copyToClipboard(effectiveHost, "q-host")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
+                      {copiedId === "q-host" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Port & Encryption</div>
+                      <div className="text-[#f7f8f8] font-bold">587 / STARTTLS</div>
+                    </div>
+                    <button onClick={() => copyToClipboard("587", "q-port")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
+                      {copiedId === "q-port" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Username</div>
+                      <div className="text-[#ff69b4] font-bold">{credentials[0].username}</div>
+                    </div>
+                    <button onClick={() => copyToClipboard(credentials[0].username, "q-user")} className="text-[#8a8f98] hover:text-[#f7f8f8] p-1">
+                      {copiedId === "q-user" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  <div className="p-2.5 rounded bg-[#090a0c] border border-[#1e2025] flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] uppercase text-[#62666d]">Password</div>
+                      <div className="text-[#27a644] font-bold">
+                        {showPassMap[credentials[0].id] ? (credentials[0].password || "zmail_live_sec_2026") : "••••••••••••"}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setShowPassMap(prev => ({ ...prev, [credentials[0].id]: !prev[credentials[0].id] }))}
+                        className="text-[#8a8f98] hover:text-[#f7f8f8] p-1"
+                        title={showPassMap[credentials[0].id] ? "Hide Password" : "Show Password"}
+                      >
+                        {showPassMap[credentials[0].id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => copyToClipboard(credentials[0].password || "zmail_live_sec_2026", "q-pass")}
+                        className="text-[#8a8f98] hover:text-[#f7f8f8] p-1"
+                      >
+                        {copiedId === "q-pass" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[10px] text-[#8a8f98]">Bound to IP Pool: <code className="text-[#f7f8f8] font-mono">{credentials[0].pool_id}</code></span>
+                  <button
+                    onClick={() => setActiveTab("credentials")}
+                    className="text-[11px] text-[#ff69b4] hover:underline cursor-pointer"
+                  >
+                    Manage / Add More Credentials &rarr;
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Custom Routing Headers */}
             <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-2">
@@ -322,7 +506,145 @@ export const SmtpConnectApp: React.FC = () => {
           </div>
         )}
 
-        {/* TAB 2: CODE SNIPPETS */}
+        {/* TAB 2: SMTP CREDENTIALS */}
+        {activeTab === "credentials" && (
+          <div className="space-y-4 max-w-3xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-[#f7f8f8] flex items-center gap-2">
+                  <Key className="w-4 h-4 text-[#ff69b4]" />
+                  <span>SMTP Submission Credentials & Authentication</span>
+                </h3>
+                <p className="text-[11px] text-[#8a8f98] mt-0.5">
+                  Manage authenticated usernames and passwords for Microsoft Outlook, Apple Mail, Thunderbird, and SMTP clients.
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setNewCredUser("");
+                  setNewCredPass("zm_" + Math.random().toString(36).substring(2, 12));
+                  setNewCredDesc("");
+                  setNewCredPool("default");
+                  setCredError("");
+                  setIsCredModalOpen(true);
+                }}
+                className="px-3.5 py-1.5 rounded bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold flex items-center gap-1.5 transition-colors shadow-sm text-xs cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Generate SMTP Credential</span>
+              </button>
+            </div>
+
+            {/* Credentials Table */}
+            <div className="border border-[#23252a] rounded-xl overflow-hidden bg-[#0f1011]">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-[#23252a] bg-[#141516] text-[10px] text-[#8a8f98] uppercase font-mono">
+                    <th className="py-2.5 px-3">SMTP Username</th>
+                    <th className="py-2.5 px-3">Password / Key</th>
+                    <th className="py-2.5 px-3">Egress IP Pool</th>
+                    <th className="py-2.5 px-3">Description</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1e2023] font-mono text-[11px]">
+                  {credentials.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-[#8a8f98] font-sans">
+                        No SMTP credentials generated yet. Click "Generate SMTP Credential" to create your first login.
+                      </td>
+                    </tr>
+                  ) : (
+                    credentials.map((c) => (
+                      <tr key={c.id} className="hover:bg-[#141516] transition-colors">
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-[#ff69b4] select-all">{c.username}</span>
+                            <button
+                              onClick={() => copyToClipboard(c.username, `user-${c.id}`)}
+                              className="text-[#8a8f98] hover:text-[#f7f8f8] p-0.5"
+                              title="Copy username"
+                            >
+                              {copiedId === `user-${c.id}` ? <Check className="w-3 h-3 text-[#27a644]" /> : <Copy className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[#27a644] font-bold select-all">
+                              {showPassMap[c.id] ? (c.password || "zmail_live_sec_2026") : "••••••••••••"}
+                            </span>
+                            <button
+                              onClick={() => setShowPassMap(prev => ({ ...prev, [c.id]: !prev[c.id] }))}
+                              className="text-[#8a8f98] hover:text-[#f7f8f8] p-0.5"
+                              title={showPassMap[c.id] ? "Hide Password" : "Show Password"}
+                            >
+                              {showPassMap[c.id] ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            </button>
+                            <button
+                              onClick={() => copyToClipboard(c.password || "zmail_live_sec_2026", `pass-${c.id}`)}
+                              className="text-[#8a8f98] hover:text-[#f7f8f8] p-0.5"
+                              title="Copy password"
+                            >
+                              {copiedId === `pass-${c.id}` ? <Check className="w-3 h-3 text-[#27a644]" /> : <Copy className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-[#3b9eff]/15 text-[#3b9eff] border border-[#3b9eff]/30">
+                            {c.pool_id}
+                          </span>
+                        </td>
+
+                        <td className="py-2.5 px-3 text-[#d0d6e0] font-sans text-xs">
+                          {c.description || "—"}
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <button
+                            onClick={() => handleToggleCredential(c.id, c.enabled)}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-sans cursor-pointer transition-colors ${
+                              c.enabled
+                                ? "bg-[#27a644]/15 text-[#27a644] border border-[#27a644]/30 hover:bg-[#27a644]/25"
+                                : "bg-[#8a8f98]/15 text-[#8a8f98] border border-[#8a8f98]/30 hover:bg-[#8a8f98]/25"
+                            }`}
+                          >
+                            {c.enabled ? "Active" : "Disabled"}
+                          </button>
+                        </td>
+
+                        <td className="py-2.5 px-3 text-right">
+                          <button
+                            onClick={() => handleDeleteCredential(c.id)}
+                            className="p-1 text-[#8a8f98] hover:text-[#eb5757] rounded hover:bg-[#18191a] transition-colors"
+                            title="Revoke and delete credential"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-3 rounded-lg bg-[#0f1011] border border-[#23252a] text-[11px] text-[#8a8f98] flex items-center justify-between">
+              <div>
+                <strong>Security Notice:</strong> Passwords are authenticated using SHA-256 and STARTTLS over port 587 or 2525.
+              </div>
+              <div className="font-mono text-[10px] text-[#ff69b4]">
+                ESMTP AUTH PLAIN / LOGIN Supported
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: CODE SNIPPETS */}
         {activeTab === "snippets" && (
           <div className="space-y-4 max-w-2xl">
             <div className="flex items-center justify-between">
@@ -651,6 +973,127 @@ export const SmtpConnectApp: React.FC = () => {
               </div>
             </form>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Generate SMTP Credential */}
+      {isCredModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#0f1011] border border-[#23252a] rounded-xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between p-4 border-b border-[#23252a]">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-[#ff69b4]" />
+                <span className="font-semibold text-sm text-[#f7f8f8]">Generate SMTP Submission Credential</span>
+              </div>
+              <button
+                onClick={() => setIsCredModalOpen(false)}
+                className="text-[#8a8f98] hover:text-[#f7f8f8] text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCredential} className="p-4 space-y-3.5">
+              <div>
+                <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                  SMTP Username / Account Identity *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newCredUser}
+                  onChange={(e) => setNewCredUser(e.target.value)}
+                  placeholder="e.g. outlook_office or alex@yourdomain.com"
+                  className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] focus:outline-none focus:border-[#ff69b4] font-mono"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-medium text-[#8a8f98]">
+                    SMTP Password *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setNewCredPass("zm_" + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6))}
+                    className="text-[10px] text-[#ff69b4] hover:underline"
+                  >
+                    Regenerate Password
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={newCredPass}
+                  onChange={(e) => setNewCredPass(e.target.value)}
+                  placeholder="Auto-generated cryptographic key"
+                  className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#27a644] font-mono focus:outline-none focus:border-[#ff69b4]"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                    Egress IP Pool
+                  </label>
+                  <select
+                    value={newCredPool}
+                    onChange={(e) => setNewCredPool(e.target.value)}
+                    className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-2.5 py-1.5 text-xs text-[#f7f8f8] focus:outline-none focus:border-[#ff69b4]"
+                  >
+                    <option value="default">default (Shared Pool)</option>
+                    {pools.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                    Description / Purpose
+                  </label>
+                  <input
+                    type="text"
+                    value={newCredDesc}
+                    onChange={(e) => setNewCredDesc(e.target.value)}
+                    placeholder="e.g. Work Laptop Outlook"
+                    className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-2.5 py-1.5 text-xs text-[#f7f8f8] focus:outline-none focus:border-[#ff69b4]"
+                  />
+                </div>
+              </div>
+
+              {credError && (
+                <div className="p-2 rounded bg-[#eb5757]/15 border border-[#eb5757]/30 text-[#eb5757] text-[11px] flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>{credError}</span>
+                </div>
+              )}
+
+              <p className="text-[10px] text-[#62666d]">
+                This credential will be accepted on port 587 (STARTTLS) and port 2525 using standard ESMTP AUTH PLAIN / LOGIN.
+              </p>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-[#23252a]">
+                <button
+                  type="button"
+                  onClick={() => setIsCredModalOpen(false)}
+                  className="px-3 py-1.5 rounded bg-[#18191a] hover:bg-[#1f2022] text-[#8a8f98] hover:text-[#f7f8f8]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAddingCred}
+                  className="px-4 py-1.5 rounded bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold shadow-sm transition-colors disabled:opacity-50"
+                >
+                  {isAddingCred ? "Saving..." : "Create Credential"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

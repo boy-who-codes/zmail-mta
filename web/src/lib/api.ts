@@ -1323,3 +1323,55 @@ export async function updateSystemSettings(settings: Partial<SystemSettings>): P
   }
   return res.json();
 }
+
+export interface SMTPCredential {
+  id: string;
+  username: string;
+  password?: string;
+  description: string;
+  pool_id: string;
+  enabled: boolean;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchSmtpCredentials(): Promise<SMTPCredential[]> {
+  const res = await fetch(`${API_BASE}/api/v1/smtp/credentials`);
+  if (!res.ok) throw new Error("Failed to fetch SMTP credentials");
+  return res.json();
+}
+
+export async function addSmtpCredential(cred: {
+  username: string;
+  password?: string;
+  description: string;
+  pool_id: string;
+}): Promise<SMTPCredential> {
+  const res = await fetch(`${API_BASE}/api/v1/smtp/credentials`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cred),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to create SMTP credential");
+  }
+  return res.json();
+}
+
+export async function deleteSmtpCredential(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/smtp/credentials?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete SMTP credential");
+}
+
+export async function toggleSmtpCredential(id: string, enabled: boolean): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/smtp/credentials/toggle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, enabled }),
+  });
+  if (!res.ok) throw new Error("Failed to toggle SMTP credential");
+}

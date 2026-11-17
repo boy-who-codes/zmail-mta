@@ -8,6 +8,47 @@ local shaping = require 'policy-extras.shaping'
 local sources = require 'policy-extras.sources'
 local rollup = require 'policy-extras.rollup'
 
+-- Helper to safely read file content
+local function read_file_content(path)
+  local f = io.open(path, 'r')
+  if f then
+    local content = f:read('*a')
+    f:close()
+    return content
+  end
+  return nil
+end
+
+-- Helper: Authenticate SMTP User against MailOps Control Plane
+local function authenticate_smtp_user(user, pass)
+  if not user or user == '' or not pass or pass == '' then
+    return false
+  end
+
+  local ok, res = pcall(function()
+    local client = kumo.http.build_client({})
+    return client:post({
+      url = 'http://mailops-backend:8080/api/v1/smtp/auth',
+      headers = { ['Content-Type'] = 'application/json' },
+      body = kumo.json_encode({ username = user, password = pass }),
+      timeout = '5s',
+    })
+  end)
+
+  if ok and res and res:status_code() == 200 then
+    local parse_ok, data = pcall(kumo.serde.json_parse, res:text())
+    if parse_ok and data and data.authenticated then
+      return true
+    end
+  end
+  return false
+end
+
+-- SMTP Authentication Hooks for Microsoft Outlook, Thunderbird, and standard mail clients
+kumo.on('smtp_server_auth_plain', function(authz, authc, password)
+  return authenticate_smtp_user(authc, password)
+end)
+
 -- Multi-IP Egress Pools Configuration (Phase 1)
 sources:setup { '/opt/kumomta/etc/policy/sources.toml' }
 
@@ -19,11 +60,21 @@ local shaper = shaping:setup_with_automation {
 }
 
 kumo.on('init', function()
-  -- 1. Public MX Inbound + Relay ESMTP Listener
-  kumo.start_esmtp_listener {
+  -- 1. Public MX Inbound + Relay ESMTP Listener with STARTTLS & SMTP AUTH support
+  local tls_cert = read_file_content('/opt/kumomta/etc/policy/tls.crt')
+  local tls_key = read_file_content('/opt/kumomta/etc/policy/tls.key')
+
+  local listener_opts = {
     listen = '0.0.0.0:2525',
     relay_hosts = { '0.0.0.0/0' },
   }
+
+  if tls_cert and tls_key and #tls_cert > 0 and #tls_key > 0 then
+    listener_opts.tls_certificate = { key_data = tls_cert }
+    listener_opts.tls_private_key = { key_data = tls_key }
+  end
+
+  kumo.start_esmtp_listener(listener_opts)
 
   -- 2. HTTP Management & Injection API
   kumo.start_http_listener {

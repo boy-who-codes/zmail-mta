@@ -5,6 +5,16 @@ max_deliveries_per_connection = 100
 max_message_rate = "100/s"
 enable_tls = "Opportunistic"
 
+[provider."apple"]
+match = [
+  { MXSuffix = ".icloud.com" }
+]
+connection_limit = 10
+max_connection_rate = "25/s"
+max_deliveries_per_connection = 50
+max_message_rate = "25/s"
+enable_tls = "Opportunistic"
+
 [provider."google"]
 match = [
   { MXSuffix = ".google.com" },
@@ -49,15 +59,5 @@ connection_limit = 20
 max_connection_rate = "40/s"
 max_deliveries_per_connection = 80
 max_message_rate = "40/s"
-enable_tls = "Opportunistic"
-
-[provider."apple"]
-match = [
-  { MXSuffix = ".icloud.com" }
-]
-connection_limit = 10
-max_connection_rate = "25/s"
-max_deliveries_per_connection = 50
-max_message_rate = "25/s"
 enable_tls = "Opportunistic"
 

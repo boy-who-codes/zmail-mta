@@ -137,6 +137,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/settings/system", s.handleGetSystemSettings)
 	s.mux.HandleFunc("PUT /api/v1/settings/system", s.handleUpdateSystemSettings)
 
+	// SMTP Authentication & Credentials for Outlook / ESMTP Relay
+	s.mux.HandleFunc("GET /api/v1/smtp/credentials", s.handleGetSMTPCredentials)
+	s.mux.HandleFunc("POST /api/v1/smtp/credentials", s.handleAddSMTPCredential)
+	s.mux.HandleFunc("DELETE /api/v1/smtp/credentials", s.handleDeleteSMTPCredential)
+	s.mux.HandleFunc("POST /api/v1/smtp/credentials/toggle", s.handleToggleSMTPCredential)
+	s.mux.HandleFunc("POST /api/v1/smtp/auth", s.handleAuthenticateSMTP)
+
 	// Audience & Contacts Directory Endpoints
 	s.mux.HandleFunc("GET /api/v1/contacts", s.handleGetContacts)
 	s.mux.HandleFunc("POST /api/v1/contacts", s.handleAddContact)

@@ -681,3 +681,31 @@ type InfrastructureInfo struct {
 	SuggestedSPF     string    `json:"suggested_spf"`
 	SuggestedMX      string    `json:"suggested_mx"`
 }
+
+// SMTPCredential represents an authenticated user for SMTP submission (ports 587, 2525, 25)
+type SMTPCredential struct {
+	ID           string     `json:"id"`
+	Username     string     `json:"username"`
+	Password     string     `json:"password,omitempty"`
+	PasswordHash string     `json:"password_hash,omitempty"`
+	Description  string     `json:"description"`
+	PoolID       string     `json:"pool_id"`
+	Enabled      bool       `json:"enabled"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// SMTPAuthRequest is sent by KumoMTA Lua hooks (AUTH LOGIN / AUTH PLAIN)
+type SMTPAuthRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// SMTPAuthResponse is returned to KumoMTA Lua hooks
+type SMTPAuthResponse struct {
+	Authenticated bool   `json:"authenticated"`
+	Username      string `json:"username,omitempty"`
+	Pool          string `json:"pool,omitempty"`
+	Message       string `json:"message,omitempty"`
+}

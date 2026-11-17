@@ -22,6 +22,342 @@
   "ips": [],
   "messages": [
     {
+      "id": "dd2b7c8a",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.107048714Z",
+      "created_at": "2026-11-17T18:38:25.107048841Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "ba79f35d",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.099304066Z",
+      "created_at": "2026-11-17T18:38:25.099304173Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "01e5448c",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.093671667Z",
+      "created_at": "2026-11-17T18:38:25.093671802Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "963f5eea",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.076563978Z",
+      "created_at": "2026-11-17T18:38:25.076564223Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "62d46888",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.061601687Z",
+      "created_at": "2026-11-17T18:38:25.06160181Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "8a1d0916",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.040712949Z",
+      "created_at": "2026-11-17T18:38:25.040713074Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "5c1391b5",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.030451641Z",
+      "created_at": "2026-11-17T18:38:25.030451749Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "0aea5409",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.024378053Z",
+      "created_at": "2026-11-17T18:38:25.02437818Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "ecb7f1e6",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.018005631Z",
+      "created_at": "2026-11-17T18:38:25.018005761Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "e4324842",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.009924015Z",
+      "created_at": "2026-11-17T18:38:25.009924122Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "f6a9ef6f",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:25.005450198Z",
+      "created_at": "2026-11-17T18:38:25.005450309Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "19d5f378",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.999678468Z",
+      "created_at": "2026-11-17T18:38:24.999678595Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "81ae36aa",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.990622483Z",
+      "created_at": "2026-11-17T18:38:24.99062263Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "bc409993",
+      "recipient": "user3@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 3",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.985271416Z",
+      "created_at": "2026-11-17T18:38:24.98527152Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "d6b3863f",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.976270683Z",
+      "created_at": "2026-11-17T18:38:24.976270828Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "303ed982",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.955005668Z",
+      "created_at": "2026-11-17T18:38:24.955005794Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "476a0b21",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.935015302Z",
+      "created_at": "2026-11-17T18:38:24.93501543Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "7e8ae3d3",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.921748087Z",
+      "created_at": "2026-11-17T18:38:24.92174821Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "1af2f858",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.898052492Z",
+      "created_at": "2026-11-17T18:38:24.898052594Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "84e035d9",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.881488252Z",
+      "created_at": "2026-11-17T18:38:24.881488376Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "1db8a371",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.847589096Z",
+      "created_at": "2026-11-17T18:38:24.847589209Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "dc551950",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.78780025Z",
+      "created_at": "2026-11-17T18:38:24.787800358Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "a16a0552",
+      "recipient": "user2@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 2",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.760804073Z",
+      "created_at": "2026-11-17T18:38:24.760804195Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "b03aff3b",
+      "recipient": "user1@target.com",
+      "sender": "dispatch@mailops.local",
+      "subject": "High Velocity Test 1",
+      "domain": "target.com",
+      "egress_ip": "172.18.0.3",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-17T18:38:24.740656533Z",
+      "created_at": "2026-11-17T18:38:24.740656662Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
       "id": "4ec3d01a",
       "recipient": "user3@target.com",
       "sender": "dispatch@mailops.local",
@@ -33,7 +369,8 @@
       "last_attempt": "2026-11-17T17:52:34.345619744Z",
       "created_at": "2026-11-17T17:52:34.345619862Z",
       "response": "250 2.0.0 OK (Queued for Pool default)",
-      "pool": "default"
+      "pool": "default",
+      "is_opened": true
     },
     {
       "id": "b4a1580d",
@@ -47,7 +384,8 @@
       "last_attempt": "2026-11-17T17:52:34.299903078Z",
       "created_at": "2026-11-17T17:52:34.299903167Z",
       "response": "250 2.0.0 OK (Queued for Pool default)",
-      "pool": "default"
+      "pool": "default",
+      "is_opened": true
     },
     {
       "id": "ea5fd321",
@@ -3851,13 +4189,6 @@
   ],
   "rate_limits": [
     {
-      "domain": "gmail.com",
-      "connection_limit": 20,
-      "max_connection_rate": "50/s",
-      "max_deliveries_per_connection": 100,
-      "max_message_rate": "50/s"
-    },
-    {
       "domain": "yahoo.com",
       "connection_limit": 15,
       "max_connection_rate": "30/s",
@@ -3884,16 +4215,16 @@
       "max_connection_rate": "100/min",
       "max_deliveries_per_connection": 100,
       "max_message_rate": "100/s"
+    },
+    {
+      "domain": "gmail.com",
+      "connection_limit": 20,
+      "max_connection_rate": "50/s",
+      "max_deliveries_per_connection": 100,
+      "max_message_rate": "50/s"
     }
   ],
   "whitelist": [
-    {
-      "id": "wl-1",
-      "cidr": "127.0.0.1/32",
-      "description": "Local Loopback Interface",
-      "created_at": "2026-11-15T22:23:04.059982694Z",
-      "last_seen": "0001-01-01T00:00:00Z"
-    },
     {
       "id": "wl-2",
       "cidr": "10.0.0.0/8",
@@ -3914,6 +4245,13 @@
       "description": "Local Subnet (192.168.0.0/16)",
       "created_at": "2026-11-15T22:23:04.059983143Z",
       "last_seen": "0001-01-01T00:00:00Z"
+    },
+    {
+      "id": "wl-1",
+      "cidr": "127.0.0.1/32",
+      "description": "Local Loopback Interface",
+      "created_at": "2026-11-15T22:23:04.059982694Z",
+      "last_seen": "0001-01-01T00:00:00Z"
     }
   ],
   "suppressions": [
@@ -3931,6 +4269,48 @@
   "bounces": [],
   "warmup_schedules": [],
   "campaigns": [
+    {
+      "id": "cmp-1984dc33",
+      "name": "test",
+      "subject": "hi",
+      "from_name": "ZMAIL Growth Team",
+      "from_email": "outreach@zmail.local",
+      "audience": "Enterprise CTOs \u0026 VPs",
+      "recipient_count": 5,
+      "status": "completed",
+      "sent_count": 5,
+      "open_rate": 0,
+      "click_rate": 0,
+      "created_at": "2026-11-16T19:19:56.419480568Z",
+      "body_html": "Hi {first_name},\n\nWe wanted to share our latest 2026 Deliverability Index report. Across 40M inspected messages, custom reverse DNS delegation yielded a 99.4% inbox acceptance rate.\n\nBest regards,\nThe ZMAIL Engineering Team",
+      "body_preview": "Hi {first_name},\n\nWe wanted to share our latest 2026 Deliverability Index report. Across 40M inspected messages, custom reverse DNS delegation yielded a 99.4% i...",
+      "track_opens": false,
+      "track_clicks": false
+    },
+    {
+      "id": "cmp-99d9b0aa",
+      "name": "PMF Beta Announcement",
+      "subject": "Exclusive Deliverability Audit for {{company}}",
+      "from_name": "MailOps Team",
+      "from_email": "hello@demo.mailops.io",
+      "audience": "Prospects",
+      "recipient_count": 2,
+      "status": "completed",
+      "sent_count": 2,
+      "open_rate": 0,
+      "click_rate": 0,
+      "created_at": "2026-11-16T19:43:23.332373256Z",
+      "body_html": "",
+      "body_preview": "",
+      "ip_pool": "pool-transactional",
+      "recipients": [
+        "alex@acmeprod.com",
+        "sarah@fintechscale.io"
+      ],
+      "template_id": "tpl-1",
+      "track_opens": false,
+      "track_clicks": false
+    },
     {
       "id": "cmp-4",
       "name": "Peak Infrastructure Capacity Alert",
@@ -4001,48 +4381,6 @@
       "created_at": "2026-11-15T18:50:17.689674712Z",
       "body_html": "\u003ch2\u003eWelcome to ZMAIL\u003c/h2\u003e\u003cp\u003eStep-by-step walkthrough of automated IP warmup schedules and reverse DNS delegation for maximum inbox placement.\u003c/p\u003e",
       "body_preview": "Step-by-step walkthrough of automated IP warmup schedules and reverse DNS delegation for maximum inbox placement.",
-      "track_opens": false,
-      "track_clicks": false
-    },
-    {
-      "id": "cmp-1984dc33",
-      "name": "test",
-      "subject": "hi",
-      "from_name": "ZMAIL Growth Team",
-      "from_email": "outreach@zmail.local",
-      "audience": "Enterprise CTOs \u0026 VPs",
-      "recipient_count": 5,
-      "status": "completed",
-      "sent_count": 5,
-      "open_rate": 0,
-      "click_rate": 0,
-      "created_at": "2026-11-16T19:19:56.419480568Z",
-      "body_html": "Hi {first_name},\n\nWe wanted to share our latest 2026 Deliverability Index report. Across 40M inspected messages, custom reverse DNS delegation yielded a 99.4% inbox acceptance rate.\n\nBest regards,\nThe ZMAIL Engineering Team",
-      "body_preview": "Hi {first_name},\n\nWe wanted to share our latest 2026 Deliverability Index report. Across 40M inspected messages, custom reverse DNS delegation yielded a 99.4% i...",
-      "track_opens": false,
-      "track_clicks": false
-    },
-    {
-      "id": "cmp-99d9b0aa",
-      "name": "PMF Beta Announcement",
-      "subject": "Exclusive Deliverability Audit for {{company}}",
-      "from_name": "MailOps Team",
-      "from_email": "hello@demo.mailops.io",
-      "audience": "Prospects",
-      "recipient_count": 2,
-      "status": "completed",
-      "sent_count": 2,
-      "open_rate": 0,
-      "click_rate": 0,
-      "created_at": "2026-11-16T19:43:23.332373256Z",
-      "body_html": "",
-      "body_preview": "",
-      "ip_pool": "pool-transactional",
-      "recipients": [
-        "alex@acmeprod.com",
-        "sarah@fintechscale.io"
-      ],
-      "template_id": "tpl-1",
       "track_opens": false,
       "track_clicks": false
     }
@@ -4488,6 +4826,42 @@
         }
       ],
       "created_at": "2026-11-17T17:52:33.7427508Z"
+    }
+  ],
+  "smtp_credentials": [
+    {
+      "id": "smtp-cred-master",
+      "username": "zmail_master",
+      "password": "zmail_live_sec_2026",
+      "password_hash": "691cae40882da0ab501a81b966f69eccef9355840f41dd6eaf52e28ca8d6294f",
+      "description": "Primary Outlook / ESMTP Relay Submission User",
+      "pool_id": "default",
+      "enabled": true,
+      "last_used_at": "2026-11-17T18:38:38.036874868Z",
+      "created_at": "2026-11-14T18:38:24.668094797Z",
+      "updated_at": "2026-11-17T18:38:24.66809496Z"
+    },
+    {
+      "id": "smtp-cred-outbound",
+      "username": "outbound@zmail.local",
+      "password": "outbound_prod_key_994",
+      "password_hash": "22fabb656fd04ac61056ec78c07496e8e658882f1acffc4706480101d81d06cd",
+      "description": "Growth \u0026 Cold Cadence Outbound Relay",
+      "pool_id": "pool-outbound-tier1",
+      "enabled": true,
+      "created_at": "2026-11-15T18:38:24.668096058Z",
+      "updated_at": "2026-11-17T18:38:24.668096157Z"
+    },
+    {
+      "id": "smtp-cred-650d754b3888",
+      "username": "outlook_user",
+      "password": "zm_588f93272058b14e7a5cdc4a",
+      "password_hash": "32d0d300e57284848b2d98410ee62e4f6dd1093f5708012092ae346bf2eda3a4",
+      "description": "My Personal Outlook",
+      "pool_id": "default",
+      "enabled": true,
+      "created_at": "2026-11-17T18:38:51.495323906Z",
+      "updated_at": "2026-11-17T18:38:51.495323906Z"
     }
   ]
 }
