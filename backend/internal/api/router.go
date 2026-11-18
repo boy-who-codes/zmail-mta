@@ -166,6 +166,10 @@ func (s *Server) registerRoutes() {
 	// 1-Click Cloudflare DNS Provisioning Endpoint
 	s.mux.HandleFunc("POST /api/v1/dns/cloudflare/sync", s.handleCloudflareSync)
 
+	// Real-Time DNS Blacklist (RBL) Watchdog Endpoints
+	s.mux.HandleFunc("GET /api/v1/dns/rbl/check", s.handleCheckRBLTarget)
+	s.mux.HandleFunc("GET /api/v1/dns/rbl/summary", s.handleGetRBLSummary)
+
 	// Audience & Contacts Directory Endpoints
 	s.mux.HandleFunc("GET /api/v1/contacts", s.handleGetContacts)
 	s.mux.HandleFunc("POST /api/v1/contacts", s.handleAddContact)

@@ -1656,3 +1656,50 @@ export async function importCleanLeads(
   return res.json();
 }
 
+// ==========================================
+// Real-Time DNS Blacklist (RBL) Watchdog Types & API
+// ==========================================
+
+export interface RBLProviderResult {
+  name: string;
+  zone: string;
+  listed: boolean;
+  return_code?: string;
+  description: string;
+  response_time_ms: number;
+}
+
+export interface RBLTargetAudit {
+  target: string;
+  target_type: "ip" | "domain";
+  is_clean: boolean;
+  listed_count: number;
+  total_checked: number;
+  reputation_score: number;
+  checked_at: string;
+  providers: RBLProviderResult[];
+}
+
+export interface RBLAuditSummary {
+  overall_clean: boolean;
+  total_targets: number;
+  clean_targets: number;
+  checked_at: string;
+  audits: RBLTargetAudit[];
+}
+
+export async function checkRBLTarget(target: string, type?: "ip" | "domain"): Promise<RBLTargetAudit> {
+  const query = new URLSearchParams({ target });
+  if (type) query.set("type", type);
+  const res = await fetch(`${API_BASE}/api/v1/dns/rbl/check?${query.toString()}`);
+  if (!res.ok) throw new Error("Failed to check RBL for target");
+  return res.json();
+}
+
+export async function fetchRBLSummary(): Promise<RBLAuditSummary> {
+  const res = await fetch(`${API_BASE}/api/v1/dns/rbl/summary`);
+  if (!res.ok) throw new Error("Failed to fetch RBL system summary");
+  return res.json();
+}
+
+

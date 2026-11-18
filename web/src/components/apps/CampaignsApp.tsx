@@ -29,6 +29,12 @@ import {
   recordSequenceReply,
   tickSequenceCadence,
 } from "../../lib/api";
+import {
+  parseSpintax,
+  countSpintaxVariations,
+  SPINTAX_PRESETS,
+  replaceVariables,
+} from "../../lib/spintax";
 import { Template } from "../../types/os";
 import { WorkflowsApp } from "./WorkflowsApp";
 
@@ -47,6 +53,8 @@ import {
   Clock,
   AlertCircle,
   MoreVertical,
+  Dices,
+  Shuffle,
   Calendar,
   Users,
   Mail,
@@ -352,6 +360,8 @@ export const CampaignsApp: React.FC = () => {
     details?: string;
   } | null>(null);
   const [composePreviewDevice, setComposePreviewDevice] = useState<"desktop" | "mobile">("desktop");
+  const [spintaxSeed, setSpintaxSeed] = useState<number>(0);
+  const handleRerollSpintax = () => setSpintaxSeed((prev) => prev + 1);
 
   // Dynamic tags available across all contacts
   const allTags = useMemo(() => {
@@ -1269,10 +1279,10 @@ export const CampaignsApp: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-medium text-[#8a8f98]">
-                      Message Body (HTML with Dynamic Tokens)
+                      Message Body (HTML with Dynamic Tokens &amp; Spintax)
                     </label>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-[#62666d]">Insert tokens:</span>
+                      <span className="text-[10px] text-[#62666d]">Tokens:</span>
                       {["first_name", "company", "email", "sender_name", "unsubscribe_url"].map((tag) => (
                         <button
                           key={tag}
@@ -1285,10 +1295,57 @@ export const CampaignsApp: React.FC = () => {
                       ))}
                     </div>
                   </div>
+
+                  {/* Spintax Controls in Broadcast Modal */}
+                  <div className="p-2.5 rounded-lg bg-[#0e1017] border border-[#1d222e] mb-2 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] text-[#8a8f98] font-semibold flex items-center gap-1">
+                          <Shuffle className="w-3 h-3 text-[#ff69b4]" />
+                          Anti-Spam Spintax Permutations:
+                        </span>
+                        {countSpintaxVariations(formSubject + " " + formBody) > 1 ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-[#ff69b4]/15 text-[#ff69b4] border border-[#ff69b4]/30 font-mono font-bold flex items-center gap-1">
+                            <Sparkles className="w-3 h-3" />
+                            {countSpintaxVariations(formSubject + " " + formBody).toLocaleString()} unique combinations
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-[#62666d] font-mono">
+                            Wrap {"{Option 1|Option 2}"} to spin
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleRerollSpintax}
+                        className="px-2 py-0.5 rounded bg-[#181d29] hover:bg-[#232b3c] border border-[#2b354b] text-[#d0d6e0] hover:text-white text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Dices className="w-3 h-3 text-[#ff69b4]" />
+                        <span>Spin Variant</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="text-[10px] text-[#62666d]">Insert Spintax:</span>
+                      {SPINTAX_PRESETS.map((p) => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => setFormBody((prev) => prev + (prev.endsWith("\n") || prev === "" ? "" : " ") + p.snippet)}
+                          className="px-1.5 py-0.5 rounded bg-[#12151e] hover:bg-[#1a202d] border border-[#23293a] text-[10px] text-[#ff69b4] font-mono cursor-pointer"
+                        >
+                          + {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <textarea
                     rows={7}
                     value={formBody}
                     onChange={(e) => setFormBody(e.target.value)}
+                    placeholder="Compose body with {Spintax|Phrasing} and {{variables}}..."
                     className="w-full bg-[#141720] border border-[#262c3b] rounded-xl p-3 text-xs text-[#f7f8f8] font-mono focus:border-[#ff69b4]/60 focus:outline-none resize-none leading-relaxed"
                   />
                 </div>
@@ -1745,7 +1802,7 @@ export const CampaignsApp: React.FC = () => {
                 <div className="p-5 flex-1 overflow-auto text-xs text-[#d0d6e0] leading-relaxed whitespace-pre-wrap font-sans space-y-4">
                   {previewStepNumber === 1 ? (
                     formBody ? (
-                      <div dangerouslySetInnerHTML={{ __html: formBody }} />
+                      <div dangerouslySetInnerHTML={{ __html: parseSpintax(formBody, String(spintaxSeed)) }} />
                     ) : (
                       "Select a template or start typing message body to see preview..."
                     )
@@ -2428,11 +2485,56 @@ export const CampaignsApp: React.FC = () => {
                         </button>
                       </div>
                     </div>
+                    <div className="flex items-center justify-between pb-1 pt-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] text-[#8a8f98] font-semibold flex items-center gap-1">
+                          <Shuffle className="w-3 h-3 text-[#ff69b4]" />
+                          Spintax &amp; Personalization:
+                        </span>
+                        {countSpintaxVariations(composeSubject + " " + composeBody) > 1 ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-[#ff69b4]/15 text-[#ff69b4] border border-[#ff69b4]/30 font-mono font-bold flex items-center gap-1">
+                            <Sparkles className="w-3 h-3" />
+                            {countSpintaxVariations(composeSubject + " " + composeBody).toLocaleString()} unique variations
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-[#1e222d] text-[#8a8f98] font-mono">
+                            Wrap {"{Hi|Hello|Hey}"} to spin variations
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleRerollSpintax}
+                        className="px-2.5 py-1 rounded bg-[#181d29] hover:bg-[#232b3c] border border-[#2b354b] text-[#d0d6e0] hover:text-white text-[11px] font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                        title="Roll a fresh randomized variation in the preview pane"
+                      >
+                        <Dices className="w-3.5 h-3.5 text-[#ff69b4]" />
+                        <span>Spin Preview</span>
+                      </button>
+                    </div>
+
+                    {/* Spintax Quick Presets */}
+                    <div className="flex items-center gap-1 flex-wrap pb-1">
+                      <span className="text-[10px] text-[#62666d]">Presets:</span>
+                      {SPINTAX_PRESETS.map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => setComposeBody((prev) => prev + (prev.endsWith("\n") || prev === "" ? "" : " ") + preset.snippet)}
+                          className="px-2 py-0.5 rounded bg-[#12151e] hover:bg-[#1c2230] border border-[#23293a] text-[10px] text-[#ff69b4] hover:border-[#ff69b4]/40 font-mono cursor-pointer transition-colors"
+                          title={preset.description}
+                        >
+                          + {preset.label}
+                        </button>
+                      ))}
+                    </div>
+
                     <textarea
                       rows={8}
                       value={composeBody}
                       onChange={(e) => setComposeBody(e.target.value)}
-                      placeholder="Write your direct email message..."
+                      placeholder="Write your direct email message with {Spintax|Spinning} and {{tokens}}..."
                       className="w-full bg-[#141720] border border-[#262c3b] rounded-lg p-3 text-xs text-[#f7f8f8] font-mono leading-relaxed focus:outline-none focus:border-[#ff69b4]"
                     />
 
@@ -2544,9 +2646,22 @@ export const CampaignsApp: React.FC = () => {
                       <span>To: </span>
                       <span className="text-[#f7f8f8] font-mono">{composeTo || "recipient@example.com"}</span>
                     </div>
-                    <h4 className="font-bold text-xs text-[#f7f8f8] pt-1">
-                      {composeSubject || "No Subject Line Provided"}
-                    </h4>
+                    <div className="flex items-center justify-between pt-1">
+                      <h4 className="font-bold text-xs text-[#f7f8f8]">
+                        {parseSpintax(composeSubject || "No Subject Line Provided", String(spintaxSeed))}
+                      </h4>
+                      {countSpintaxVariations(composeSubject + " " + composeBody) > 1 && (
+                        <button
+                          type="button"
+                          onClick={handleRerollSpintax}
+                          className="px-2 py-0.5 rounded text-[10px] bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 border border-[#ff69b4]/30 text-[#ff69b4] flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Generate another variant"
+                        >
+                          <Dices className="w-3 h-3" />
+                          <span>Spin</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="p-4 flex-1 bg-[#090a0d] overflow-y-auto">
@@ -2554,7 +2669,7 @@ export const CampaignsApp: React.FC = () => {
                       <div
                         className="prose prose-invert prose-xs max-w-none text-zinc-300"
                         dangerouslySetInnerHTML={{
-                          __html: composeBody
+                          __html: parseSpintax(composeBody, String(spintaxSeed))
                             .replace(/\{\{first_name.*?\}\}/g, "Alex")
                             .replace(/\{\{company.*?\}\}/g, "Acme Corp")
                             .replace(/\{\{email.*?\}\}/g, composeTo || "alex@acme.com"),
@@ -2562,7 +2677,7 @@ export const CampaignsApp: React.FC = () => {
                       />
                     ) : (
                       <pre className="text-zinc-300 font-sans whitespace-pre-wrap text-xs leading-relaxed">
-                        {composeBody
+                        {parseSpintax(composeBody, String(spintaxSeed))
                           .replace(/\{\{first_name.*?\}\}/g, "Alex")
                           .replace(/\{\{company.*?\}\}/g, "Acme Corp")
                           .replace(/\{\{email.*?\}\}/g, composeTo || "alex@acme.com")}

@@ -20,7 +20,11 @@ import {
   ArrowRight,
   Cloud,
   ExternalLink,
-  ShieldAlert
+  ShieldAlert,
+  Shield,
+  Search,
+  Activity,
+  Flame
 } from "lucide-react";
 import {
   fetchDomains,
@@ -32,7 +36,11 @@ import {
   syncCloudflareDNS,
   fetchInfrastructureDetection,
   detectInfrastructureNow,
-  InfrastructureInfo
+  InfrastructureInfo,
+  checkRBLTarget,
+  fetchRBLSummary,
+  RBLTargetAudit,
+  RBLAuditSummary
 } from "../../lib/api";
 
 interface DomainRecord {
@@ -71,10 +79,50 @@ export const DnsDomainsApp: React.FC = () => {
   const [dnsDetails, setDnsDetails] = useState<DnsCheckResult | null>(null);
 
   // Screen state
-  const [subScreen, setSubScreen] = useState<"list" | "add-domain" | "cloudflare">("list");
+  const [subScreen, setSubScreen] = useState<"list" | "add-domain" | "cloudflare" | "rbl-watchdog">("list");
   const [domainInput, setDomainInput] = useState<string>("");
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // RBL Blacklist Watchdog State
+  const [rblTargetInput, setRblTargetInput] = useState<string>("");
+  const [rblAudit, setRblAudit] = useState<RBLTargetAudit | null>(null);
+  const [rblSummary, setRblSummary] = useState<RBLAuditSummary | null>(null);
+  const [isCheckingRBL, setIsCheckingRBL] = useState<boolean>(false);
+  const [rblError, setRblError] = useState<string>("");
+
+  const handleRunRBLCheck = async (targetOverride?: string) => {
+    const target = (targetOverride || rblTargetInput || selectedDomain || infraInfo?.public_ip || "").trim();
+    if (!target) return;
+    try {
+      setIsCheckingRBL(true);
+      setRblError("");
+      const res = await checkRBLTarget(target);
+      setRblAudit(res);
+      setRblTargetInput(target);
+    } catch (err: any) {
+      setRblError(err.message || "Failed to query RBL DNS providers");
+    } finally {
+      setIsCheckingRBL(false);
+    }
+  };
+
+  const handleRunFleetRBLScan = async () => {
+    try {
+      setIsCheckingRBL(true);
+      setRblError("");
+      const res = await fetchRBLSummary();
+      setRblSummary(res);
+      if (res.audits && res.audits.length > 0) {
+        setRblAudit(res.audits[0]);
+        setRblTargetInput(res.audits[0].target);
+      }
+    } catch (err: any) {
+      setRblError(err.message || "Failed to scan system fleet blacklists");
+    } finally {
+      setIsCheckingRBL(false);
+    }
+  };
 
 
   const [cfToken, setCfToken] = useState<string>("");
@@ -315,10 +363,68 @@ export const DnsDomainsApp: React.FC = () => {
   const allVerified = isDkimVerified && isSpfVerified && isDmarcVerified;
 
   return (
-    <div className="flex h-full bg-[#0a0a0c] text-xs">
-      {subScreen === "list" && (
-        <>
-          {/* Left Domain List Sidebar */}
+    <div className="flex flex-col h-full bg-[#0a0a0c] text-xs">
+      {/* Top Tab Switcher */}
+      <div className="px-4 py-2 bg-[#0c0d12] border-b border-[#23252a] flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSubScreen("list")}
+            className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors cursor-pointer text-xs ${
+              subScreen === "list" || subScreen === "add-domain"
+                ? "bg-[#ff69b4]/15 text-[#ff69b4] border border-[#ff69b4]/30"
+                : "text-[#8a8f98] hover:text-[#f7f8f8] hover:bg-[#161820]"
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>Domains & Records (SPF/DKIM/DMARC)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSubScreen("rbl-watchdog");
+              if (!rblAudit) {
+                handleRunRBLCheck(selectedDomain || infraInfo?.public_ip || "mailops.io");
+              }
+            }}
+            className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors cursor-pointer text-xs ${
+              subScreen === "rbl-watchdog"
+                ? "bg-[#ff69b4]/15 text-[#ff69b4] border border-[#ff69b4]/30"
+                : "text-[#8a8f98] hover:text-[#f7f8f8] hover:bg-[#161820]"
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-[#ff69b4]" />
+            <span>🛡️ RBL Blacklist Watchdog</span>
+            {rblAudit && (
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${rblAudit.is_clean ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-rose-500/20 text-rose-400 border border-rose-500/30"}`}>
+                {rblAudit.is_clean ? "100% Clean" : `${rblAudit.listed_count} Listed`}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setSubScreen("cloudflare")}
+            className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors cursor-pointer text-xs ${
+              subScreen === "cloudflare"
+                ? "bg-[#f38020]/15 text-[#f38020] border border-[#f38020]/30"
+                : "text-[#8a8f98] hover:text-[#f7f8f8] hover:bg-[#161820]"
+            }`}
+          >
+            <Cloud className="w-3.5 h-3.5 text-[#f38020]" />
+            <span>Cloudflare 1-Click Sync</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 text-[11px] text-[#8a8f98]">
+          <span className="font-mono text-[#d0d6e0]">{domains.length} Domains</span>
+          <span>•</span>
+          <span className="font-mono text-[#ff69b4]">Egress: {infraInfo?.public_ip || "127.0.0.1"}</span>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {subScreen === "list" && (
+          <>
+            {/* Left Domain List Sidebar */}
       <div className="w-64 border-r border-[#23252a] bg-[#0f1011] flex flex-col">
         <div className="p-3 border-b border-[#23252a] flex items-center justify-between">
           <span className="font-semibold text-[#f7f8f8] flex items-center gap-1.5">
@@ -529,6 +635,19 @@ export const DnsDomainsApp: React.FC = () => {
                 >
                   <Cloud className="w-3.5 h-3.5" />
                   <span>Auto-add to Cloudflare</span>
+                </button>
+
+                {/* 1-Click RBL Blacklist Scan Button */}
+                <button
+                  onClick={() => {
+                    setSubScreen("rbl-watchdog");
+                    handleRunRBLCheck(selectedDomain);
+                  }}
+                  className="px-3.5 py-1.5 rounded bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 border border-[#ff69b4]/30 text-[#ff69b4] text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Check domain against real-time DNSBL / RBL blocklists"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>RBL Blacklist Scan</span>
                 </button>
 
                 <button
@@ -1084,6 +1203,265 @@ export const DnsDomainsApp: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Real-Time DNS Blacklist (RBL) Watchdog Screen */}
+      {subScreen === "rbl-watchdog" && (
+        <div className="flex-1 flex flex-col bg-[#0a0a0c] overflow-y-auto">
+          {/* Header */}
+          <div className="px-5 py-3.5 bg-[#0f1011] border-b border-[#23252a] flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSubScreen("list")}
+                className="px-2.5 py-1 rounded bg-[#18191a] hover:bg-[#23252a] text-[#8a8f98] hover:text-[#f7f8f8] text-xs transition-colors cursor-pointer"
+              >
+                ← Back to Domains
+              </button>
+              <span className="text-[#62666d]">/</span>
+              <span className="font-semibold text-sm text-[#f7f8f8] flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#ff69b4]" />
+                Real-Time DNS Blacklist (RBL) Watchdog
+              </span>
+            </div>
+
+            {/* Quick Fleet Actions */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRunFleetRBLScan}
+                disabled={isCheckingRBL}
+                className="px-3 py-1.5 rounded-lg bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#d0d6e0] hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Activity className={`w-3.5 h-3.5 text-[#ff69b4] ${isCheckingRBL ? "animate-spin" : ""}`} />
+                <span>Scan Entire Fleet</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="max-w-5xl mx-auto w-full p-6 space-y-6">
+            {/* Target Query Bar */}
+            <div className="p-4 rounded-xl bg-[#121316] border border-[#23252a] shadow-lg space-y-3">
+              <label className="block text-xs font-semibold text-[#f7f8f8]">
+                Query IP or Envelope Domain Across Global Blacklists
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-[#8a8f98]" />
+                  <input
+                    type="text"
+                    value={rblTargetInput}
+                    onChange={(e) => setRblTargetInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleRunRBLCheck()}
+                    placeholder="e.g. 192.0.2.1, yourdomain.com, or mail.yourdomain.com"
+                    className="w-full pl-9 pr-3 py-2 bg-[#0a0a0c] border border-[#23252a] rounded-lg text-xs font-mono text-[#f7f8f8] focus:outline-none focus:border-[#ff69b4]"
+                  />
+                </div>
+                <button
+                  onClick={() => handleRunRBLCheck()}
+                  disabled={isCheckingRBL || !rblTargetInput.trim()}
+                  className="px-5 py-2 rounded-lg bg-[#ff69b4] hover:bg-[#ff52a8] text-[#0a0a0c] font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isCheckingRBL ? "animate-spin" : ""}`} />
+                  <span>{isCheckingRBL ? "Auditing Blacklists..." : "Audit Target"}</span>
+                </button>
+              </div>
+
+              {/* Fast Presets */}
+              <div className="flex items-center gap-2 pt-1 flex-wrap text-[11px] text-[#8a8f98]">
+                <span>Quick Targets:</span>
+                {selectedDomain && (
+                  <button
+                    onClick={() => handleRunRBLCheck(selectedDomain)}
+                    className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#f7f8f8] font-mono cursor-pointer transition-colors"
+                  >
+                    Domain: {selectedDomain}
+                  </button>
+                )}
+                {infraInfo?.public_ip && (
+                  <button
+                    onClick={() => handleRunRBLCheck(infraInfo.public_ip)}
+                    className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#ff69b4] font-mono cursor-pointer transition-colors"
+                  >
+                    Egress IP: {infraInfo.public_ip}
+                  </button>
+                )}
+                {domains.filter(d => d.domain !== selectedDomain).slice(0, 3).map(d => (
+                  <button
+                    key={d.domain}
+                    onClick={() => handleRunRBLCheck(d.domain)}
+                    className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#8a8f98] hover:text-[#f7f8f8] font-mono cursor-pointer transition-colors"
+                  >
+                    {d.domain}
+                  </button>
+                ))}
+              </div>
+
+              {rblError && (
+                <div className="p-2.5 rounded bg-red-950/40 border border-red-800/40 text-red-300 text-xs">
+                  {rblError}
+                </div>
+              )}
+            </div>
+
+            {/* Reputation Shield Hero Banner */}
+            {rblAudit && (
+              <div
+                className={`p-5 rounded-2xl border flex flex-col md:flex-row items-center justify-between gap-5 shadow-xl ${
+                  rblAudit.is_clean
+                    ? "bg-gradient-to-r from-emerald-950/40 via-[#0f1411] to-[#0a0a0c] border-emerald-500/30"
+                    : "bg-gradient-to-r from-rose-950/40 via-[#180f12] to-[#0a0a0c] border-rose-500/30"
+                }`}
+              >
+                <div className="flex items-center gap-4">
+                  <div
+                    className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border ${
+                      rblAudit.is_clean
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                        : "bg-rose-500/10 border-rose-500/30 text-rose-400"
+                    }`}
+                  >
+                    {rblAudit.is_clean ? <ShieldCheck className="w-8 h-8" /> : <ShieldAlert className="w-8 h-8" />}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-base text-[#f7f8f8] font-mono">
+                        {rblAudit.target}
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] uppercase font-mono font-bold bg-[#1e2029] text-[#8a8f98] border border-[#2b2e3b]">
+                        {rblAudit.target_type}
+                      </span>
+                    </div>
+                    <div className="text-xs font-semibold mt-1">
+                      {rblAudit.is_clean ? (
+                        <span className="text-emerald-400 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4" /> 100% CLEAN REPUTATION • ZERO LISTINGS REPORTED
+                        </span>
+                      ) : (
+                        <span className="text-rose-400 flex items-center gap-1.5">
+                          <AlertCircle className="w-4 h-4" /> REPUTATION DEGRADED • LISTED IN {rblAudit.listed_count} BLACKLIST(S)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[#8a8f98] mt-1 max-w-xl">
+                      Authoritative real-time DNS queries executed directly against root providers. Major mailbox providers (Google, Microsoft, Yahoo) query these exact DNSBL zones during SMTP handshake before deciding inbox placement.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="text-center md:text-right shrink-0 bg-[#0a0a0c]/60 p-4 rounded-xl border border-white/5 min-w-[140px]">
+                  <div className="text-[10px] uppercase tracking-wider text-[#8a8f98] font-mono">Deliverability Index</div>
+                  <div
+                    className={`text-3xl font-black font-mono mt-0.5 ${
+                      rblAudit.reputation_score >= 90
+                        ? "text-emerald-400"
+                        : rblAudit.reputation_score >= 60
+                        ? "text-amber-400"
+                        : "text-rose-400"
+                    }`}
+                  >
+                    {rblAudit.reputation_score}%
+                  </div>
+                  <div className="text-[10px] text-[#62666d] mt-0.5">
+                    {rblAudit.total_checked - rblAudit.listed_count} / {rblAudit.total_checked} Providers Clean
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Providers Breakdown Table */}
+            {rblAudit && (
+              <div className="rounded-xl border border-[#23252a] bg-[#0f1011] overflow-hidden shadow-lg">
+                <div className="px-4 py-3 border-b border-[#23252a] flex items-center justify-between">
+                  <div className="font-semibold text-xs text-[#f7f8f8] flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-[#ff69b4]" />
+                    <span>Real-Time DNSBL Provider Diagnostics</span>
+                  </div>
+                  <span className="text-[11px] text-[#8a8f98] font-mono">
+                    Audited at: {new Date(rblAudit.checked_at).toLocaleTimeString()}
+                  </span>
+                </div>
+
+                <div className="divide-y divide-[#1e2025]">
+                  {rblAudit.providers.map((prov) => (
+                    <div
+                      key={prov.zone}
+                      className="p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 hover:bg-[#13151a] transition-colors"
+                    >
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-[#f7f8f8]">{prov.name}</span>
+                          <span className="text-[10px] font-mono text-[#ff69b4] bg-[#ff69b4]/10 px-1.5 py-0.5 rounded border border-[#ff69b4]/20">
+                            {prov.zone}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[#8a8f98]">{prov.description}</p>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0 self-end sm:self-auto">
+                        <span className="text-[10px] font-mono text-[#62666d] flex items-center gap-1">
+                          ⚡ {prov.response_time_ms}ms
+                        </span>
+
+                        {prov.listed ? (
+                          <div className="px-2.5 py-1 rounded bg-rose-500/15 border border-rose-500/30 text-rose-400 font-bold text-xs flex items-center gap-1.5">
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Listed ({prov.return_code || "Active"})</span>
+                          </div>
+                        ) : (
+                          <div className="px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold text-xs flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Clean (NXDOMAIN)</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Fleet Audit Summary (if loaded) */}
+            {rblSummary && (
+              <div className="rounded-xl border border-[#23252a] bg-[#0f1011] p-4 shadow-lg space-y-3">
+                <div className="flex items-center justify-between border-b border-[#23252a] pb-2">
+                  <div className="font-semibold text-xs text-[#f7f8f8] flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-[#ff69b4]" />
+                    <span>Sending Fleet Blacklist Audit Summary</span>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${rblSummary.overall_clean ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                    {rblSummary.clean_targets} / {rblSummary.total_targets} Targets Clean
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+                  {rblSummary.audits.map((a) => (
+                    <div
+                      key={a.target}
+                      onClick={() => {
+                        setRblAudit(a);
+                        setRblTargetInput(a.target);
+                      }}
+                      className="p-2.5 rounded-lg bg-[#14161d] border border-[#232733] hover:border-[#ff69b4]/40 cursor-pointer transition-colors flex items-center justify-between"
+                    >
+                      <div className="truncate pr-2">
+                        <div className="font-mono font-bold text-xs text-[#f7f8f8] truncate">{a.target}</div>
+                        <div className="text-[10px] text-[#8a8f98] uppercase">{a.target_type}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className={`font-mono font-bold text-xs ${a.is_clean ? "text-emerald-400" : "text-rose-400"}`}>
+                          {a.reputation_score}%
+                        </span>
+                        <div className="text-[9px] text-[#62666d]">
+                          {a.listed_count === 0 ? "Clean" : `${a.listed_count} listed`}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
+  </div>
   );
 };

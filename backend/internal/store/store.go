@@ -2875,8 +2875,8 @@ func (s *Store) DispatchCampaign(req models.CampaignDispatchRequest) (*models.Ca
 			body = fmt.Sprintf("<html><body><h2>%s</h2><p>%s</p></body></html>", subjectText, cmp.BodyPreview)
 		}
 
-		renderedSubject := renderTemplateString(subjectText, vars)
-		renderedBody := renderTemplateString(body, vars)
+		renderedSubject := RenderSpintax(renderTemplateString(subjectText, vars), cleanRecip)
+		renderedBody := RenderSpintax(renderTemplateString(body, vars), cleanRecip)
 
 		// Append Custom Footer, Unsubscribe, and Company Address if configured
 		var footerBuf bytes.Buffer
