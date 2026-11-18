@@ -26,6 +26,18 @@ export const APPS: AppDefinition[] = [
     description: "Automated sender rotation, mailbox pools, daily/hourly quotas, and thread continuity",
   },
   {
+    id: "webmail",
+    title: "Unified Webmail & Inbox Client",
+    shortTitle: "Webmail",
+    iconName: "Mail",
+    category: "Delivery",
+    defaultWidth: 1100,
+    defaultHeight: 700,
+    minWidth: 840,
+    minHeight: 520,
+    description: "Multi-mailbox unified webmail client: read, search, reply, and compose directly from your server without Outlook",
+  },
+  {
     id: "workflows",
     title: "Workflow Sequences & DAG Automations",
     shortTitle: "Workflows",

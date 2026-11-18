@@ -1440,3 +1440,84 @@ export async function tickWarmupSchedule(): Promise<WarmupDaemonSummary> {
   if (!res.ok) throw new Error("Failed to advance warmup schedule");
   return res.json();
 }
+
+// --- PHASE 7: AUTONOMOUS AI CONVERSATIONAL WARMUP PEER NETWORK ---
+export interface AIWarmupMessage {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+  sent_at: string;
+  is_reply: boolean;
+}
+
+export interface AIWarmupThread {
+  id: string;
+  sender_mailbox: string;
+  peer_mailbox: string;
+  subject: string;
+  topic: string;
+  status: "delivered" | "replied" | "saved_from_spam" | "starred";
+  inbox_placement: "primary" | "updates";
+  turns_count: number;
+  messages: AIWarmupMessage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AIWarmupNetworkStats {
+  total_exchanged_today: number;
+  inbox_placement_rate: number;
+  spam_save_rate: number;
+  average_reply_rate: number;
+  active_peers_count: number;
+  total_threads_active: number;
+  network_status: "healthy" | "degraded" | "optimizing";
+  last_exchange_at: string;
+}
+
+export interface AIWarmupSettings {
+  enabled: boolean;
+  daily_exchange_target: number;
+  reply_rate_target: number;
+  enable_spam_protection: boolean;
+  enable_auto_star: boolean;
+  selected_topics: string[];
+}
+
+export async function fetchAIWarmupStats(): Promise<AIWarmupNetworkStats> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/ai-network/stats`);
+  if (!res.ok) throw new Error("Failed to fetch AI warmup stats");
+  return res.json();
+}
+
+export async function fetchAIWarmupThreads(): Promise<AIWarmupThread[]> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/ai-network/threads`);
+  if (!res.ok) throw new Error("Failed to fetch AI warmup threads");
+  return res.json();
+}
+
+export async function fetchAIWarmupSettings(): Promise<AIWarmupSettings> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/ai-network/settings`);
+  if (!res.ok) throw new Error("Failed to fetch AI warmup settings");
+  return res.json();
+}
+
+export async function updateAIWarmupSettings(settings: AIWarmupSettings): Promise<AIWarmupSettings> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/ai-network/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error("Failed to update AI warmup settings");
+  return res.json();
+}
+
+export async function triggerAIWarmupRound(): Promise<{ success: boolean; message: string; thread: AIWarmupThread }> {
+  const res = await fetch(`${API_BASE}/api/v1/warmup/ai-network/trigger-round`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to trigger AI warmup round");
+  return res.json();
+}

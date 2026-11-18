@@ -26,6 +26,7 @@ import {
   KeyRound,
   Webhook,
   FileCode2,
+  Mail,
 } from "lucide-react";
 
 // App component imports
@@ -47,10 +48,12 @@ import { TerminalApp } from "../apps/TerminalApp";
 import { SystemSettingsApp } from "../apps/SystemSettingsApp";
 import { SmtpConnectApp } from "../apps/SmtpConnectApp";
 import { MailboxesApp } from "../apps/MailboxesApp";
+import { WebmailApp } from "../apps/WebmailApp";
 
 const APP_COMPONENT_MAP: Record<string, React.FC> = {
   campaigns: CampaignsApp,
   mailboxes: MailboxesApp,
+  webmail: WebmailApp,
   workflows: WorkflowsApp,
   contacts: ContactsApp,
   suppressions: SuppressionApp,
@@ -87,6 +90,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   KeyRound,
   Webhook,
   FileCode2,
+  Mail,
 };
 
 const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: React.ReactNode }> = {

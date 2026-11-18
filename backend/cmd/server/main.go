@@ -42,6 +42,9 @@ func main() {
 	// Launch Autonomous Mailbox & IP Warmup Scheduler Daemon (evaluates daily ramp curves)
 	appStore.StartAutonomousWarmupWorker(context.Background(), 24*time.Hour)
 
+	// Launch Autonomous AI Conversational Warmup Peer Network Worker (exchanges simulated peer threads)
+	store.StartAIWarmupBackgroundWorker(context.Background(), appStore, 30*time.Minute)
+
 	webhookStreamer := webhook.NewStreamer(appStore)
 
 	server := api.NewServer(appStore, workerPool, webhookStreamer)

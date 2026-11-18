@@ -149,6 +149,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/warmup/summary", s.handleGetWarmupSummary)
 	s.mux.HandleFunc("POST /api/v1/warmup/tick", s.handleTickWarmupSchedule)
 
+	// AI Conversational Peer Warmup Network Endpoints
+	s.mux.HandleFunc("GET /api/v1/warmup/ai-network/stats", s.handleGetAIWarmupStats)
+	s.mux.HandleFunc("GET /api/v1/warmup/ai-network/threads", s.handleGetAIWarmupThreads)
+	s.mux.HandleFunc("GET /api/v1/warmup/ai-network/settings", s.handleGetAIWarmupSettings)
+	s.mux.HandleFunc("PUT /api/v1/warmup/ai-network/settings", s.handleUpdateAIWarmupSettings)
+	s.mux.HandleFunc("POST /api/v1/warmup/ai-network/trigger-round", s.handleTriggerAIWarmupRound)
+
 	// 1-Click Cloudflare DNS Provisioning Endpoint
 	s.mux.HandleFunc("POST /api/v1/dns/cloudflare/sync", s.handleCloudflareSync)
 
