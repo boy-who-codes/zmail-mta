@@ -26,7 +26,24 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DOCKER_DIR="${ROOT_DIR}/deploy/docker"
 
 # 1. Verify / Install Docker Engine & Compose
-echo -e "${CYAN}[1/5] Checking Docker & Docker Compose installation...${NC}"
+echo -e "${CYAN}[1/5] Checking Docker, Swap & System Resources...${NC}"
+
+# Add 2GB Swap file on 1GB RAM instances (t2.micro / t3.micro) to avoid build-time OOM killer
+TOTAL_RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "2048")
+if [ "$TOTAL_RAM_MB" -lt 1500 ]; then
+  if ! swapon --show | grep -q "swapfile"; then
+    echo -e "${YELLOW}Detected 1GB RAM server (${TOTAL_RAM_MB}MB). Creating 2GB swapfile for smooth build & testing...${NC}"
+    sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    if ! grep -q "/swapfile" /etc/fstab; then
+      echo "/swapfile swap swap defaults 0 0" | sudo tee -a /etc/fstab > /dev/null || true
+    fi
+    echo -e "${GREEN}✓ 2GB swap space successfully activated.${NC}"
+  fi
+fi
+
 if ! command -v docker &> /dev/null; then
   echo -e "${YELLOW}Docker is not installed. Installing Docker Engine...${NC}"
   if command -v apt-get &> /dev/null; then
@@ -114,10 +131,11 @@ echo -e "\n${GREEN}${BOLD}✓ ZMAIL Platform successfully deployed!${NC}\n"
 echo -e "${BOLD}Access Information:${NC}"
 echo -e "  • Web Dashboard OS: ${CYAN}http://${AWS_PUBLIC_IP:-localhost}:3000${NC}"
 echo -e "  • REST API Control: ${CYAN}http://${AWS_PUBLIC_IP:-localhost}:8080${NC}"
-echo -e "  • Inbound/Outbound SMTP: Ports ${YELLOW}25${NC}, ${YELLOW}587${NC}, and ${YELLOW}2525${NC}\n"
+echo -e "  • Inbound/Outbound SMTP: Ports ${YELLOW}25${NC}, ${YELLOW}587${NC}, and ${YELLOW}2525${NC}"
+echo -e "  • Dovecot IMAP (Outlook/Mail): Ports ${YELLOW}993${NC} (IMAPS TLS) and ${YELLOW}143${NC} (STARTTLS)\n"
 
 echo -e "${BOLD}AWS Deployment Next Steps:${NC}"
-echo -e "  1. ${YELLOW}Security Groups${NC}: Ensure ports 25, 587, 2525, 3000, and 8080 are allowed in AWS Security Groups."
+echo -e "  1. ${YELLOW}Security Groups${NC}: Allow inbound ports 25, 587, 2525, 993, 143, 3000, and 8080."
 echo -e "  2. ${YELLOW}Port 25 Unblock${NC}: Request AWS Support to lift the port 25 throttle on Elastic IP ${AWS_PUBLIC_IP}."
 echo -e "  3. ${YELLOW}Reverse DNS (PTR)${NC}: Set PTR record in AWS EC2 Console -> Elastic IPs -> Actions -> Update reverse DNS."
 echo -e "  4. ${YELLOW}DNS Records${NC}: In the ZMAIL dashboard, open 'Domains & DNS' to see suggested A, MX, and SPF records."
