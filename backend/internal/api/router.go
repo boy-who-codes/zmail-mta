@@ -156,6 +156,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/v1/warmup/ai-network/settings", s.handleUpdateAIWarmupSettings)
 	s.mux.HandleFunc("POST /api/v1/warmup/ai-network/trigger-round", s.handleTriggerAIWarmupRound)
 
+	// Multi-Step Drip Sequence & Auto-Stop Cadence Endpoints
+	s.mux.HandleFunc("GET /api/v1/sequences/leads", s.handleGetSequenceLeads)
+	s.mux.HandleFunc("GET /api/v1/sequences/stats", s.handleGetSequenceStats)
+	s.mux.HandleFunc("POST /api/v1/sequences/enroll-leads", s.handleEnrollSequenceLeads)
+	s.mux.HandleFunc("POST /api/v1/sequences/record-reply", s.handleRecordSequenceReply)
+	s.mux.HandleFunc("POST /api/v1/sequences/tick", s.handleTickSequenceCadence)
+
 	// 1-Click Cloudflare DNS Provisioning Endpoint
 	s.mux.HandleFunc("POST /api/v1/dns/cloudflare/sync", s.handleCloudflareSync)
 

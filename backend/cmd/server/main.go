@@ -45,6 +45,9 @@ func main() {
 	// Launch Autonomous AI Conversational Warmup Peer Network Worker (exchanges simulated peer threads)
 	store.StartAIWarmupBackgroundWorker(context.Background(), appStore, 30*time.Minute)
 
+	// Launch Autonomous Drip Sequence Cadence Worker (evaluates follow-up delays and stops on reply)
+	store.StartAutonomousSequenceWorker(context.Background(), appStore, 15*time.Minute)
+
 	webhookStreamer := webhook.NewStreamer(appStore)
 
 	server := api.NewServer(appStore, workerPool, webhookStreamer)

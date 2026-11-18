@@ -1428,6 +1428,11 @@ func (s *Store) AddInboundMessage(id, sender, recipient, subject, pool string) {
 
 	s.messages = append([]models.QueuedMessage{msg}, s.messages...)
 	s.saveLocked()
+
+	// Check if this incoming message is a reply from a lead in an active sequence cadence
+	go func(fromSender string) {
+		_, _ = s.RecordReplyForLead(fromSender)
+	}(sender)
 }
 
 // InjectMessage accepts an email submission, sends to KumoMTA via ESMTP with X-Pool, and spools it

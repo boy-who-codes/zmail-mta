@@ -21,6 +21,13 @@ import {
   AutomationPlaybook,
   CampaignStep,
   SystemSettings,
+  SequenceLead,
+  SequenceEngineStats,
+  fetchSequenceLeads,
+  fetchSequenceStats,
+  enrollSequenceLeads,
+  recordSequenceReply,
+  tickSequenceCadence,
 } from "../../lib/api";
 import { Template } from "../../types/os";
 import { WorkflowsApp } from "./WorkflowsApp";
@@ -69,6 +76,10 @@ import {
   GitCommit,
   Building,
   MailCheck,
+  Upload,
+  StopCircle,
+  FileSpreadsheet,
+  ArrowRight,
 } from "lucide-react";
 
 export interface CampaignItem {
@@ -181,6 +192,7 @@ export const CampaignsApp: React.FC = () => {
   useEffect(() => {
     loadData();
     loadDependencies();
+    loadCadenceData();
   }, [loadData]);
 
   // SCREEN VIEW STATE: "list" | "create" | "edit" | "inspect"
@@ -240,8 +252,86 @@ export const CampaignsApp: React.FC = () => {
   const [formSchedule, setFormSchedule] = useState<"immediate" | "scheduled">("immediate");
   const [previewDevice, setPreviewDevice] = useState<"desktop" | "mobile">("desktop");
 
-  // Top App Mode Switcher: "campaigns" | "compose" | "workflows"
-  const [appMode, setAppMode] = useState<"campaigns" | "compose" | "workflows">("campaigns");
+  // Top App Mode Switcher: "campaigns" | "compose" | "cadence" | "workflows"
+  const [appMode, setAppMode] = useState<"campaigns" | "compose" | "cadence" | "workflows">("campaigns");
+
+  // Drip Sequence Cadence State
+  const [sequenceLeadsList, setSequenceLeadsList] = useState<SequenceLead[]>([]);
+  const [sequenceStats, setSequenceStats] = useState<SequenceEngineStats | null>(null);
+  const [loadingCadence, setLoadingCadence] = useState(false);
+  const [showCsvModal, setShowCsvModal] = useState(false);
+  const [csvText, setCsvText] = useState("elena.rostova@cloudscale.io,Elena,CloudScale\ndavid.kim@vortexai.tech,David,Vortex AI\nmarcus.vance@corestack.net,Marcus,CoreStack\nsamuel.greene@datadelta.org,Samuel,DataDelta\ncharlotte.noir@synthex.com,Charlotte,Synthex");
+  const [enrollingLeads, setEnrollingLeads] = useState(false);
+  const [tickingCadence, setTickingCadence] = useState(false);
+
+  const loadCadenceData = async () => {
+    try {
+      setLoadingCadence(true);
+      const [leads, stats] = await Promise.all([
+        fetchSequenceLeads().catch(() => []),
+        fetchSequenceStats().catch(() => null),
+      ]);
+      setSequenceLeadsList(leads);
+      setSequenceStats(stats);
+    } catch (e: any) {
+      // quiet
+    } finally {
+      setLoadingCadence(false);
+    }
+  };
+
+  const handleEnrollCsv = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!csvText.trim()) return;
+    try {
+      setEnrollingLeads(true);
+      const lines = csvText.trim().split("\n");
+      const parsedLeads: Array<{ email: string; first_name?: string; company?: string }> = [];
+
+      for (const line of lines) {
+        const parts = line.split(",").map((p) => p.trim());
+        if (parts[0] && parts[0].includes("@")) {
+          parsedLeads.push({
+            email: parts[0],
+            first_name: parts[1] || "",
+            company: parts[2] || "",
+          });
+        }
+      }
+
+      const res = await enrollSequenceLeads("camp-enterprise-01", parsedLeads);
+      showNotice(`Enrolled ${res.enrolled} verified leads into cadence (${res.skipped} skipped/duplicate).`);
+      setShowCsvModal(false);
+      await loadCadenceData();
+    } catch (err: any) {
+      showNotice("Failed to enroll leads: " + err.message);
+    } finally {
+      setEnrollingLeads(false);
+    }
+  };
+
+  const handleTickCadence = async () => {
+    try {
+      setTickingCadence(true);
+      const res = await tickSequenceCadence();
+      showNotice(`Cadence Evaluated: ${res.dispatched_followups} follow-ups scheduled/advanced.`);
+      await loadCadenceData();
+    } catch (err: any) {
+      showNotice("Error advancing cadence: " + err.message);
+    } finally {
+      setTickingCadence(false);
+    }
+  };
+
+  const handleSimulateReply = async (email: string) => {
+    try {
+      const res = await recordSequenceReply(email);
+      showNotice(res.message);
+      await loadCadenceData();
+    } catch (err: any) {
+      showNotice("Error recording reply: " + err.message);
+    }
+  };
 
   // 1-to-1 Quick Compose State
   const [composeTo, setComposeTo] = useState("");
@@ -1813,6 +1903,22 @@ export const CampaignsApp: React.FC = () => {
 
               <button
                 type="button"
+                onClick={() => {
+                  setAppMode("cadence");
+                  loadCadenceData();
+                }}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  appMode === "cadence"
+                    ? "bg-[#ff69b4] text-[#0a0a0c] shadow-md shadow-[#ff69b4]/20"
+                    : "text-[#8a8f98] hover:text-[#f7f8f8]"
+                }`}
+              >
+                <GitCommit className="w-3.5 h-3.5" />
+                <span>🎯 Multi-Step Drip Cadence</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setAppMode("workflows")}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   appMode === "workflows"
@@ -1837,6 +1943,308 @@ export const CampaignsApp: React.FC = () => {
           {appMode === "workflows" ? (
             <div className="flex-1 flex flex-col overflow-hidden">
               <WorkflowsApp />
+            </div>
+          ) : appMode === "cadence" ? (
+            /* VIEW: MULTI-STEP DRIP CADENCE STUDIO */
+            <div className="flex-1 flex flex-col overflow-hidden bg-[#0a0b0e]">
+              {/* Top Header & Actions Strip */}
+              <div className="flex items-center justify-between px-6 py-3.5 bg-[#0e1015] border-b border-[#20242e] shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-[#ff69b4]/10 border border-[#ff69b4]/30 flex items-center justify-center text-[#ff69b4]">
+                      <GitCommit className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-[#f7f8f8]">Multi-Step Drip Cadence Engine</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#1a0e1c] text-[#ff69b4] border border-[#ff69b4]/30 font-semibold flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#ff69b4] animate-pulse" />
+                          Auto-Stop On Reply Active
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Automated multi-touch outreach with thread-locked follow-ups that automatically halt when a lead responds.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowCsvModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#141720] hover:bg-[#1c2130] border border-[#2a3142] text-xs font-semibold text-[#f7f8f8] transition-colors cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-[#ff69b4]" />
+                    <span>Import Leads (CSV)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTickCadence}
+                    disabled={tickingCadence}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ff69b4] hover:bg-[#ff52a4] disabled:opacity-50 text-[#0a0a0c] font-bold text-xs shadow-md shadow-[#ff69b4]/20 transition-all cursor-pointer"
+                  >
+                    <Zap className={`w-3.5 h-3.5 ${tickingCadence ? "animate-spin" : ""}`} />
+                    <span>{tickingCadence ? "Evaluating Schedule..." : "⚡ Advance Cadence (+1 Day)"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={loadCadenceData}
+                    disabled={loadingCadence}
+                    className="p-1.5 rounded-lg bg-[#141720] hover:bg-[#1a1e28] border border-[#242936] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors cursor-pointer"
+                    title="Refresh Cadence"
+                  >
+                    <Activity className={`w-3.5 h-3.5 ${loadingCadence ? "animate-spin" : ""}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Main Cadence Content Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {/* Metrics Row */}
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="p-4 rounded-xl bg-[#11131a] border border-[#20242e] flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-mono uppercase text-[#8a8f98]">Total Leads Enrolled</span>
+                      <p className="text-xl font-bold text-white mt-1">
+                        {sequenceStats ? sequenceStats.total_leads : sequenceLeadsList.length}
+                      </p>
+                    </div>
+                    <div className="w-9 h-9 rounded-xl bg-[#181c26] border border-[#262c3b] flex items-center justify-center text-[#ff69b4]">
+                      <Users className="w-4 h-4" />
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#11131a] border border-[#20242e] flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-mono uppercase text-[#8a8f98]">Active in Cadence</span>
+                      <p className="text-xl font-bold text-[#27a644] mt-1">
+                        {sequenceStats ? sequenceStats.active_in_sequence : sequenceLeadsList.filter((l) => l.status === "active").length}
+                      </p>
+                    </div>
+                    <div className="w-9 h-9 rounded-xl bg-[#0d1f14] border border-[#27a644]/30 flex items-center justify-center text-[#27a644]">
+                      <Play className="w-4 h-4" />
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#11131a] border border-[#20242e] flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono uppercase text-[#8a8f98]">Replies Caught</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#ff69b4]/10 text-[#ff69b4] border border-[#ff69b4]/20">Auto-Stopped</span>
+                      </div>
+                      <p className="text-xl font-bold text-[#ff69b4] mt-1">
+                        {sequenceStats ? sequenceStats.replied_count : sequenceLeadsList.filter((l) => l.status === "replied").length}
+                        <span className="text-xs text-[#8a8f98] font-normal ml-1.5">
+                          ({sequenceStats ? sequenceStats.reply_rate.toFixed(1) : "0.0"}%)
+                        </span>
+                      </p>
+                    </div>
+                    <div className="w-9 h-9 rounded-xl bg-[#26101f] border border-[#ff69b4]/30 flex items-center justify-center text-[#ff69b4]">
+                      <StopCircle className="w-4 h-4" />
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#11131a] border border-[#20242e] flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-mono uppercase text-[#8a8f98]">Completed Journey</span>
+                      <p className="text-xl font-bold text-[#3b9eff] mt-1">
+                        {sequenceStats ? sequenceStats.completed_count : sequenceLeadsList.filter((l) => l.status === "completed").length}
+                      </p>
+                    </div>
+                    <div className="w-9 h-9 rounded-xl bg-[#0d1726] border border-[#3b9eff]/30 flex items-center justify-center text-[#3b9eff]">
+                      <CheckCircle2 className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Visual Sequence Pipeline Cards */}
+                <div className="p-5 rounded-2xl bg-[#0d0f15] border border-[#1e2330] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-[#ff69b4]" />
+                      <h3 className="font-bold text-xs uppercase tracking-wider text-white">Active Sequence Workflow: Enterprise B2B Playbook</h3>
+                    </div>
+                    <span className="text-[11px] font-mono text-[#8a8f98]">3 Total Steps &bull; 7 Days Target Timeline</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center pt-2">
+                    {/* Step 1 */}
+                    <div className="p-4 rounded-xl bg-[#12141c] border border-[#262c3b] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#ff69b4]/10 text-[#ff69b4] font-bold">STEP 1</span>
+                        <span className="text-[10px] text-[#8a8f98] font-mono">Day 0 (Instant)</span>
+                      </div>
+                      <h4 className="font-semibold text-xs text-white">Initial Outreach</h4>
+                      <p className="text-[11px] text-[#8a8f98] line-clamp-2">Direct personal introduction & value proposition with tailored pain point.</p>
+                      <div className="pt-1 flex items-center gap-2 text-[10px] text-zinc-400 font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#27a644]" />
+                        <span>Dispatched to 100% Leads</span>
+                      </div>
+                    </div>
+
+                    {/* Delay Connector 1 */}
+                    <div className="flex flex-col items-center justify-center text-center p-2 rounded-lg bg-[#0e1017] border border-dashed border-[#262c3b]">
+                      <Clock className="w-4 h-4 text-[#8a8f98] mb-1" />
+                      <span className="text-[10px] font-mono text-zinc-300 font-semibold">Wait 3 Days</span>
+                      <span className="text-[9px] text-[#ff69b4] font-medium leading-tight mt-0.5">Auto-halts if replied</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-[#8a8f98] mt-1" />
+                    </div>
+
+                    {/* Step 2 */}
+                    <div className="p-4 rounded-xl bg-[#12141c] border border-[#262c3b] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#3b9eff]/10 text-[#3b9eff] font-bold">STEP 2</span>
+                        <span className="text-[10px] text-[#8a8f98] font-mono">Day 3 (+72 hrs)</span>
+                      </div>
+                      <h4 className="font-semibold text-xs text-white">Follow-Up (Threaded)</h4>
+                      <p className="text-[11px] text-[#8a8f98] line-clamp-2">Locks into Step 1 RFC-822 thread with In-Reply-To header. Case study link.</p>
+                      <div className="pt-1 flex items-center gap-2 text-[10px] text-zinc-400 font-mono">
+                        <Lock className="w-3 h-3 text-[#3b9eff]" />
+                        <span>Pinned Sender Mailbox</span>
+                      </div>
+                    </div>
+
+                    {/* Delay Connector 2 */}
+                    <div className="flex flex-col items-center justify-center text-center p-2 rounded-lg bg-[#0e1017] border border-dashed border-[#262c3b]">
+                      <Clock className="w-4 h-4 text-[#8a8f98] mb-1" />
+                      <span className="text-[10px] font-mono text-zinc-300 font-semibold">Wait 4 Days</span>
+                      <span className="text-[9px] text-[#ff69b4] font-medium leading-tight mt-0.5">Auto-halts if replied</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-[#8a8f98] mt-1" />
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="p-4 rounded-xl bg-[#12141c] border border-[#262c3b] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#f59e0b]/10 text-[#f59e0b] font-bold">STEP 3</span>
+                        <span className="text-[10px] text-[#8a8f98] font-mono">Day 7 (Final)</span>
+                      </div>
+                      <h4 className="font-semibold text-xs text-white">Break-Up Email</h4>
+                      <p className="text-[11px] text-[#8a8f98] line-clamp-2">Polite final attempt asking if we should close the file or connect next quarter.</p>
+                      <div className="pt-1 flex items-center gap-2 text-[10px] text-zinc-400 font-mono">
+                        <Check className="w-3 h-3 text-[#27a644]" />
+                        <span>Auto-Marks Completed</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Live Sequence Leads Table */}
+                <div className="rounded-2xl bg-[#0e1015] border border-[#20242e] overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-[#20242e] flex items-center justify-between bg-[#12141c]">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-[#ff69b4]" />
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-white">Live Enrolled Leads Progression</h4>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#181d28] text-[#8a8f98] border border-[#262c3b]">
+                        {sequenceLeadsList.length} Leads Tracked
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="text-[11px] text-[#8a8f98]">
+                        Tip: Click <strong className="text-[#ff69b4]">"Simulate Reply"</strong> on any active lead to test instant auto-halt!
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-[#20242e] bg-[#0c0d12] text-[#8a8f98] font-mono text-[11px]">
+                          <th className="py-3 px-4">Lead Email / Contact</th>
+                          <th className="py-3 px-4">Company</th>
+                          <th className="py-3 px-4">Current Step</th>
+                          <th className="py-3 px-4">Pinned Mailbox</th>
+                          <th className="py-3 px-4">Status</th>
+                          <th className="py-3 px-4">Next Due Date</th>
+                          <th className="py-3 px-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#181c26]">
+                        {sequenceLeadsList.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="text-center py-10 text-[#8a8f98]">
+                              No leads currently enrolled in this cadence. Click "Import Leads (CSV)" above to add prospects.
+                            </td>
+                          </tr>
+                        ) : (
+                          sequenceLeadsList.map((lead) => (
+                            <tr key={lead.id} className="hover:bg-[#12151e]/80 transition-colors">
+                              <td className="py-3 px-4">
+                                <div className="font-medium text-white">{lead.first_name ? `${lead.first_name} (${lead.email})` : lead.email}</div>
+                                <div className="text-[10px] text-[#8a8f98] font-mono">Enrolled {new Date(lead.created_at).toLocaleDateString()}</div>
+                              </td>
+                              <td className="py-3 px-4 text-zinc-300 font-medium">
+                                {lead.company || "Enterprise Corp"}
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs text-white font-semibold">Step {lead.current_step} of {lead.total_steps}</span>
+                                  <div className="w-16 h-1.5 rounded-full bg-[#1e2330] overflow-hidden">
+                                    <div
+                                      className={`h-full ${lead.status === "replied" ? "bg-[#ff69b4]" : lead.status === "completed" ? "bg-[#3b9eff]" : "bg-[#27a644]"}`}
+                                      style={{ width: `${(lead.current_step / lead.total_steps) * 100}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-zinc-400 font-mono text-[11px]">
+                                {lead.pinned_sender_email || "sarah.connor@acme-corp.com"}
+                              </td>
+                              <td className="py-3 px-4">
+                                {lead.status === "active" ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#0d1f14] text-[#27a644] border border-[#27a644]/30 font-semibold text-[10px]">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#27a644] animate-pulse" />
+                                    Active Cadence
+                                  </span>
+                                ) : lead.status === "replied" ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#26101f] text-[#ff69b4] border border-[#ff69b4]/30 font-semibold text-[10px]">
+                                    <StopCircle className="w-3 h-3 text-[#ff69b4]" />
+                                    Replied & Auto-Halted
+                                  </span>
+                                ) : lead.status === "completed" ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#0d1726] text-[#3b9eff] border border-[#3b9eff]/30 font-semibold text-[10px]">
+                                    <CheckCircle2 className="w-3 h-3 text-[#3b9eff]" />
+                                    Completed
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#181c26] text-[#8a8f98] border border-[#262c3b] font-semibold text-[10px]">
+                                    {lead.status}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-zinc-400 font-mono text-[11px]">
+                                {lead.status === "replied" ? (
+                                  <span className="text-[#8a8f98] line-through">Stopped</span>
+                                ) : lead.status === "completed" ? (
+                                  <span className="text-[#8a8f98]">End of Flow</span>
+                                ) : (
+                                  new Date(lead.next_step_due_at).toLocaleDateString() + " " + new Date(lead.next_step_due_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                {lead.status === "active" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSimulateReply(lead.email)}
+                                    className="px-2.5 py-1 rounded bg-[#1f1523] hover:bg-[#ff69b4]/20 border border-[#ff69b4]/30 text-[#ff69b4] font-semibold text-[10px] transition-all cursor-pointer"
+                                  >
+                                    Simulate Reply
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-[#62666d] font-mono">No action</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </div>
           ) : appMode === "compose" ? (
             /* VIEW B: 1-TO-1 QUICK COMPOSE */
@@ -2367,6 +2775,80 @@ export const CampaignsApp: React.FC = () => {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* CSV / PASTE IMPORT MODAL */}
+      {showCsvModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-2xl bg-[#0f1117] border border-[#262c3b] shadow-2xl p-6 space-y-4 animate-scaleUp">
+            <div className="flex items-center justify-between pb-3 border-b border-[#20242e]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#ff69b4]/10 border border-[#ff69b4]/30 flex items-center justify-center text-[#ff69b4]">
+                  <FileSpreadsheet className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">Import & Enroll Leads</h3>
+                  <p className="text-[11px] text-[#8a8f98]">
+                    Paste CSV or comma-separated leads (Email, First Name, Company) to start cadence.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCsvModal(false)}
+                className="text-[#8a8f98] hover:text-white text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleEnrollCsv} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-[#8a8f98]">
+                  CSV Data <span className="font-mono text-[10px] text-[#62666d]">(Format: email,first_name,company)</span>
+                </label>
+                <textarea
+                  rows={8}
+                  value={csvText}
+                  onChange={(e) => setCsvText(e.target.value)}
+                  placeholder="elena.rostova@cloudscale.io,Elena,CloudScale"
+                  className="w-full bg-[#141720] border border-[#262c3b] rounded-xl p-3 text-xs text-[#f7f8f8] font-mono leading-relaxed focus:outline-none focus:border-[#ff69b4]"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-[#20242e]">
+                <span className="text-[11px] text-[#8a8f98] font-mono">
+                  Auto-deduplicated & syntax validated
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCsvModal(false)}
+                    className="px-3.5 py-1.5 rounded-lg border border-[#262c3b] text-xs text-[#8a8f98] hover:text-[#f7f8f8] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={enrollingLeads}
+                    className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#ff69b4] hover:bg-[#ff52a4] disabled:opacity-50 text-black font-bold text-xs shadow-md shadow-[#ff69b4]/20 transition-all cursor-pointer"
+                  >
+                    {enrollingLeads ? (
+                      <>
+                        <Clock className="w-3.5 h-3.5 animate-spin" />
+                        <span>Enrolling...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Enroll Leads Now</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

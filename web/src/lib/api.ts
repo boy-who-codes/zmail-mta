@@ -1521,3 +1521,78 @@ export async function triggerAIWarmupRound(): Promise<{ success: boolean; messag
   if (!res.ok) throw new Error("Failed to trigger AI warmup round");
   return res.json();
 }
+
+// --- PHASE 8: MULTI-STEP DRIP SEQUENCE CADENCE & AUTO-STOP API ---
+export interface SequenceLead {
+  id: string;
+  campaign_id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  company?: string;
+  current_step: number;
+  total_steps: number;
+  status: "active" | "replied" | "bounced" | "unsubscribed" | "completed";
+  pinned_sender_email: string;
+  original_message_id: string;
+  original_subject: string;
+  last_step_sent_at: string;
+  next_step_due_at: string;
+  replied_at?: string;
+  created_at: string;
+}
+
+export interface SequenceEngineStats {
+  campaign_id: string;
+  total_leads: number;
+  active_in_sequence: number;
+  replied_count: number;
+  reply_rate: number;
+  completed_count: number;
+  bounced_count: number;
+  auto_stop_active: boolean;
+  next_scheduled_step?: string;
+}
+
+export async function fetchSequenceLeads(campaignID = ""): Promise<SequenceLead[]> {
+  const res = await fetch(`${API_BASE}/api/v1/sequences/leads?campaign_id=${encodeURIComponent(campaignID)}`);
+  if (!res.ok) throw new Error("Failed to fetch sequence leads");
+  return res.json();
+}
+
+export async function fetchSequenceStats(campaignID = ""): Promise<SequenceEngineStats> {
+  const res = await fetch(`${API_BASE}/api/v1/sequences/stats?campaign_id=${encodeURIComponent(campaignID)}`);
+  if (!res.ok) throw new Error("Failed to fetch sequence stats");
+  return res.json();
+}
+
+export async function enrollSequenceLeads(
+  campaignID: string,
+  leads: Array<{ email: string; first_name?: string; last_name?: string; company?: string }>
+): Promise<{ success: boolean; enrolled: number; skipped: number; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/sequences/enroll-leads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ campaign_id: campaignID, leads }),
+  });
+  if (!res.ok) throw new Error("Failed to enroll sequence leads");
+  return res.json();
+}
+
+export async function recordSequenceReply(sender: string): Promise<{ halted: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/sequences/record-reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sender }),
+  });
+  if (!res.ok) throw new Error("Failed to record sequence reply");
+  return res.json();
+}
+
+export async function tickSequenceCadence(): Promise<{ success: boolean; dispatched_followups: number; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/sequences/tick`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to advance sequence cadence");
+  return res.json();
+}
