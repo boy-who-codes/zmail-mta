@@ -229,6 +229,18 @@ export const APPS: AppDefinition[] = [
     minHeight: 440,
     description: "Manage organization access, security controls, sending credentials, and appearance",
   },
+  {
+    id: "docs",
+    title: "ZMAIL Documentation & Guide",
+    shortTitle: "Docs Guide",
+    iconName: "BookOpen",
+    category: "System",
+    defaultWidth: 1080,
+    defaultHeight: 700,
+    minWidth: 840,
+    minHeight: 520,
+    description: "Interactive visual guides, architectural diagrams, and step-by-step instructions for every ZMAIL app",
+  },
 ];
 
 export const INITIAL_CLUSTER_STATUS: ClusterStatus = {

@@ -1596,3 +1596,63 @@ export async function tickSequenceCadence(): Promise<{ success: boolean; dispatc
   if (!res.ok) throw new Error("Failed to advance sequence cadence");
   return res.json();
 }
+
+// ==========================================
+// Lead Hygiene & Syntax/MX Verifier Types & API
+// ==========================================
+
+export interface LeadVerificationResult {
+  email: string;
+  domain: string;
+  syntax_valid: boolean;
+  has_mx: boolean;
+  mx_hosts: string[];
+  is_disposable: boolean;
+  is_role_based: boolean;
+  status: "valid" | "risky" | "invalid";
+  reason: string;
+  score: number;
+}
+
+export interface BulkVerificationSummary {
+  total_processed: number;
+  valid_count: number;
+  risky_count: number;
+  invalid_count: number;
+  clean_rate: number;
+  results: LeadVerificationResult[];
+}
+
+export async function verifySingleEmail(email: string): Promise<LeadVerificationResult> {
+  const res = await fetch(`${API_BASE}/api/v1/verifier/single`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error("Failed to verify email");
+  return res.json();
+}
+
+export async function verifyBulkEmails(emails: string[]): Promise<BulkVerificationSummary> {
+  const res = await fetch(`${API_BASE}/api/v1/verifier/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emails }),
+  });
+  if (!res.ok) throw new Error("Failed to run bulk email verification");
+  return res.json();
+}
+
+export async function importCleanLeads(
+  leads: LeadVerificationResult[],
+  list?: string
+): Promise<{ success: boolean; imported: number; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/verifier/import-clean`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ leads, list }),
+  });
+  if (!res.ok) throw new Error("Failed to import clean verified leads");
+  return res.json();
+}
+

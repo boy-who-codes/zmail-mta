@@ -17,7 +17,8 @@ export type AppId =
   | "sandbox"
   | "ippools"
   | "terminal"
-  | "settings";
+  | "settings"
+  | "docs";
 
 export interface SuppressionEntry {
   id: string;

@@ -11,6 +11,24 @@ import {
   ShieldCheck,
   CheckCircle2,
   Info,
+  BookOpen,
+  Send,
+  GitCommit,
+  Mail,
+  Zap,
+  Globe,
+  Mailbox,
+  Layers,
+  ShieldAlert,
+  BarChart3,
+  Server,
+  KeyRound,
+  FileCode2,
+  Plus,
+  Play,
+  RotateCw,
+  Sliders,
+  ExternalLink,
 } from "lucide-react";
 
 export const TopMenuBar: React.FC = () => {
@@ -25,7 +43,7 @@ export const TopMenuBar: React.FC = () => {
 
   const [timeStr, setTimeStr] = useState<string>("");
   const [dateStr, setDateStr] = useState<string>("");
-  const [isAppleMenuOpen, setIsAppleMenuOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
 
   useEffect(() => {
     const updateTime = () => {
@@ -42,6 +60,18 @@ export const TopMenuBar: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Close menus when clicking outside
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".zmail-menu-item")) {
+        setOpenMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", handleOutsideClick);
+    return () => window.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
   const activeApp = APPS.find((a) => a.id === activeWindowId) || {
     id: "system",
     shortTitle: "ZMAIL",
@@ -50,141 +80,542 @@ export const TopMenuBar: React.FC = () => {
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
+  const handleMenuClick = (menuId: string) => {
+    setOpenMenu((prev) => (prev === menuId ? null : menuId));
+  };
+
+  const handleMenuHover = (menuId: string) => {
+    if (openMenu !== null) {
+      setOpenMenu(menuId);
+    }
+  };
+
   return (
-    <div className="h-9 w-full bg-[#0a0a0c]/90 backdrop-blur-md border-b border-[#23252a] px-3 flex items-center justify-between text-xs text-[#d0d6e0] z-[20000] select-none">
+    <div className="h-9 w-full bg-[#0a0a0c]/95 backdrop-blur-md border-b border-[#23252a] px-3 flex items-center justify-between text-xs text-[#d0d6e0] z-[20000] select-none">
       {/* Left Menu Items */}
-      <div className="flex items-center gap-4">
-        {/* System Menu */}
-        <div className="relative">
+      <div className="flex items-center gap-1.5 md:gap-3">
+        {/* System Menu (ZMAIL Logo) */}
+        <div className="relative zmail-menu-item">
           <button
-            onClick={() => setIsAppleMenuOpen(!isAppleMenuOpen)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-[#18191a] text-[#f7f8f8] font-bold tracking-wider transition-colors"
+            onClick={() => handleMenuClick("zmail")}
+            onMouseEnter={() => handleMenuHover("zmail")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === "zmail"
+                ? "bg-[#ff69b4] text-[#0a0a0c] font-black"
+                : "hover:bg-[#18191a] text-[#f7f8f8] font-bold"
+            }`}
           >
-            <div className="w-2.5 h-2.5 rounded-sm bg-[#ff69b4] flex items-center justify-center">
-              <span className="text-[7px] text-[#010102] font-black leading-none">Z</span>
+            <div
+              className={`w-3 h-3 rounded-sm flex items-center justify-center ${
+                openMenu === "zmail" ? "bg-[#0a0a0c]" : "bg-[#ff69b4]"
+              }`}
+            >
+              <span
+                className={`text-[8px] font-black leading-none ${
+                  openMenu === "zmail" ? "text-[#ff69b4]" : "text-[#010102]"
+                }`}
+              >
+                Z
+              </span>
             </div>
             <span>ZMAIL</span>
           </button>
 
-          {isAppleMenuOpen && (
-            <div
-              onMouseLeave={() => setIsAppleMenuOpen(false)}
-              className="absolute top-8 left-0 w-60 bg-[#141516] border border-[#23252a] rounded-lg shadow-2xl py-1 text-xs text-[#d0d6e0] z-50"
-            >
-              <div className="px-3 py-1.5 font-semibold text-[#f7f8f8] border-b border-[#23252a] flex items-center justify-between">
-                <span>ZMAIL Enterprise</span>
-                <span className="text-[10px] text-[#27a644] bg-[#27a644]/10 px-1.5 py-0.5 rounded font-mono">
-                  Online
-                </span>
-              </div>
-              <button
-                onClick={() => {
-                  setIsAppleMenuOpen(false);
-                  openApp("settings");
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#f7f8f8] flex items-center gap-2"
-              >
-                <Info className="w-3.5 h-3.5 text-[#8a8f98]" />
-                <span>About ZMAIL</span>
-              </button>
-              <button
-                onClick={() => {
-                  setIsAppleMenuOpen(false);
-                  openApp("terminal");
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#f7f8f8] flex items-center gap-2"
-              >
-                <Terminal className="w-3.5 h-3.5 text-[#8a8f98]" />
-                <span>System Diagnostics & Console</span>
-              </button>
-              <div className="my-1 border-t border-[#23252a]" />
-              <button
-                onClick={() => {
-                  setIsAppleMenuOpen(false);
-                  openApp("infrastructure");
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#f7f8f8] flex items-center gap-2"
-              >
-                <Activity className="w-3.5 h-3.5 text-[#8a8f98]" />
-                <span>Check Server Health</span>
-              </button>
-              <div className="my-1 border-t border-[#23252a]" />
-              <div className="px-3 py-1 text-[10px] text-[#62666d]">
-                Security Status: All connections secure
+          {openMenu === "zmail" && (
+            <div className="absolute top-full pt-1 left-0 z-50">
+              <div className="w-64 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0] animate-in fade-in-50 duration-100">
+                <div className="px-3.5 py-2 font-semibold text-[#f7f8f8] border-b border-[#202535] flex items-center justify-between">
+                  <div>
+                    <span className="font-bold text-xs">ZMAIL Platform</span>
+                    <span className="block text-[10px] text-[#8a8f98] font-normal">v2.4.0 Commercial Engine</span>
+                  </div>
+                  <span className="text-[10px] text-[#27a644] bg-[#27a644]/15 border border-[#27a644]/30 px-2 py-0.5 rounded-full font-mono font-semibold">
+                    ONLINE
+                  </span>
+                </div>
+
+                <div className="py-1">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("docs");
+                    }}
+                    className="w-full text-left px-3.5 py-2 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <BookOpen className="w-4 h-4 text-[#ff69b4]" />
+                    <div>
+                      <span className="font-semibold block text-white">Platform User Guide & Docs</span>
+                      <span className="text-[10px] text-[#8a8f98]">Architecture, how-to, and visual guides</span>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("terminal");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <Terminal className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>System Diagnostics & Console</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("infrastructure");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <Activity className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>Server Health & Topology</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("kumomta");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <Server className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>KumoMTA Engine & Lua Shaping</span>
+                  </button>
+                </div>
+
+                <div className="my-1 border-t border-[#202535]" />
+
+                <div className="py-1">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("settings");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>System Settings & Access</span>
+                  </button>
+                </div>
+
+                <div className="px-3.5 py-1.5 bg-[#0e1014] border-t border-[#202535] text-[10px] text-[#62666d] flex items-center justify-between">
+                  <span>RAM: ~52MB Footprint</span>
+                  <span className="text-[#27a644]">TLS 1.3 Active</span>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Current Active App Name */}
-        <span className="font-semibold text-[#f7f8f8]">{activeApp.shortTitle}</span>
+        {/* Current Active App Focus Label */}
+        <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#13151b] border border-[#202535]">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#ff69b4]" />
+          <span className="font-bold text-white text-[11px]">{activeApp.shortTitle}</span>
+        </div>
 
-        {/* Standard App Submenus */}
-        <div className="hidden md:flex items-center gap-1 text-[#8a8f98]">
-          <button className="px-2 py-0.5 rounded hover:bg-[#18191a] hover:text-[#f7f8f8]">File</button>
-          <button className="px-2 py-0.5 rounded hover:bg-[#18191a] hover:text-[#f7f8f8]">Edit</button>
-          <button className="px-2 py-0.5 rounded hover:bg-[#18191a] hover:text-[#f7f8f8]">View</button>
-
-          {/* Sending Menu Dropdown */}
-          <div className="relative group">
-            <button className="px-2 py-0.5 rounded hover:bg-[#18191a] hover:text-[#f7f8f8] flex items-center gap-1 cursor-pointer">
-              <span>Sending</span>
+        {/* Desktop Menu Ribbon */}
+        <div className="flex items-center gap-0.5 text-[#8a8f98]">
+          {/* FILE MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("file")}
+              onMouseEnter={() => handleMenuHover("file")}
+              className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                openMenu === "file" ? "bg-[#1f2433] text-[#f7f8f8]" : "hover:bg-[#18191a] hover:text-[#f7f8f8]"
+              }`}
+            >
+              File
             </button>
-            <div className="absolute top-7 left-0 w-52 bg-[#141516] border border-[#23252a] rounded-lg shadow-2xl py-1 text-xs text-[#d0d6e0] hidden group-hover:block z-50">
-              <button
-                onClick={() => openApp("campaigns")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
-              >
-                <span>Campaign Operations</span>
-                <span className="text-[10px] text-[#8a8f98] font-mono">⌘1</span>
-              </button>
-              <button
-                onClick={() => openApp("workflows")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
-              >
-                <span>Workflow Sequences</span>
-                <span className="text-[10px] text-[#8a8f98] font-mono">⌘2</span>
-              </button>
-              <button
-                onClick={() => openApp("analytics")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
-              >
-                <span>Reports & Line/Pie Graphs</span>
-                <span className="text-[10px] text-[#8a8f98] font-mono">⌘3</span>
-              </button>
-              <button
-                onClick={() => openApp("contacts")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
-              >
-                <span>Audience Contacts</span>
-                <span className="text-[10px] text-[#8a8f98] font-mono">⌘4</span>
-              </button>
-              <div className="my-1 border-t border-[#23252a]" />
-              <button
-                onClick={() => openApp("kumomta")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#f7f8f8] flex items-center justify-between cursor-pointer"
-              >
-                <span>MTA Status & Queues</span>
-              </button>
-              <button
-                onClick={() => openApp("smtp_connect")}
-                className="w-full text-left px-3 py-1.5 hover:bg-[#1f2022] hover:text-[#f7f8f8] flex items-center justify-between cursor-pointer"
-              >
-                <span>SMTP Relay & Senders</span>
-              </button>
-            </div>
+            {openMenu === "file" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-56 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0]">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("campaigns");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Send className="w-3.5 h-3.5 text-[#ff69b4]" />
+                      <span>New Broadcast</span>
+                    </span>
+                    <span className="text-[10px] text-[#62666d] font-mono">⌘N</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("campaigns");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <GitCommit className="w-3.5 h-3.5 text-[#ff69b4]" />
+                      <span>New Drip Cadence</span>
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("webmail");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Mail className="w-3.5 h-3.5 text-[#3b9eff]" />
+                      <span>Compose Direct Email</span>
+                    </span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#202535]" />
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("contacts");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-[#27a644]" />
+                    <span>Import Contacts (CSV)</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("contacts");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#27a644]" />
+                    <span>Verify Lead List (MX Check)</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <button className="px-2 py-0.5 rounded hover:bg-[#18191a] hover:text-[#f7f8f8]">Window</button>
+          {/* EDIT MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("edit")}
+              onMouseEnter={() => handleMenuHover("edit")}
+              className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                openMenu === "edit" ? "bg-[#1f2433] text-[#f7f8f8]" : "hover:bg-[#18191a] hover:text-[#f7f8f8]"
+              }`}
+            >
+              Edit
+            </button>
+            {openMenu === "edit" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-56 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0]">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      toggleCommandPalette();
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Search className="w-3.5 h-3.5 text-[#8a8f98]" />
+                      <span>Quick Search Palette</span>
+                    </span>
+                    <span className="text-[10px] text-[#62666d] font-mono">⌘K</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("templates");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <FileCode2 className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>Email Templates Library</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("mailboxes");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Mailbox className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>Mailbox Rotation Settings</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#202535]" />
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("suppressions");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ef4444] flex items-center gap-2 cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-[#ef4444]" />
+                    <span>Suppression Shield & Bounces</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* VIEW MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("view")}
+              onMouseEnter={() => handleMenuHover("view")}
+              className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                openMenu === "view" ? "bg-[#1f2433] text-[#f7f8f8]" : "hover:bg-[#18191a] hover:text-[#f7f8f8]"
+              }`}
+            >
+              View
+            </button>
+            {openMenu === "view" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-60 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0]">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("analytics");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#3b9eff] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <BarChart3 className="w-3.5 h-3.5 text-[#3b9eff]" />
+                      <span>Delivery Reports & Analytics</span>
+                    </span>
+                    <span className="text-[10px] text-[#62666d] font-mono">⌘3</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("webmail");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-[#ff69b4]" />
+                    <span>Unified Webmail Client</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("contacts");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>Audience Contacts Directory</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#202535]" />
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("dns");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#27a644] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-[#27a644]" />
+                    <span>DNS & Cloudflare 1-Click Sync</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("ippools");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>IP Pools & Egress Shaping</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SENDING MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("sending")}
+              onMouseEnter={() => handleMenuHover("sending")}
+              className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                openMenu === "sending"
+                  ? "bg-[#1f2433] text-[#ff69b4] font-semibold"
+                  : "hover:bg-[#18191a] hover:text-[#ff69b4]"
+              }`}
+            >
+              Sending
+            </button>
+            {openMenu === "sending" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-64 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0]">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("campaigns");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Send className="w-3.5 h-3.5 text-[#ff69b4]" />
+                      <span>Campaign Broadcast Studio</span>
+                    </span>
+                    <span className="text-[10px] text-[#62666d] font-mono">⌘1</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("campaigns");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <GitCommit className="w-3.5 h-3.5 text-[#ff69b4]" />
+                      <span>Multi-Step Drip Cadence</span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1 rounded bg-[#ff69b4]/15 text-[#ff69b4]">AUTO-STOP</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("mailboxes");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#27a644] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Zap className="w-3.5 h-3.5 text-[#27a644]" />
+                      <span>AI Warmup Peer Network</span>
+                    </span>
+                    <span className="text-[9px] font-mono px-1 rounded bg-[#27a644]/15 text-[#27a644]">P2P</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("workflows");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Layers className="w-3.5 h-3.5 text-[#8a8f98]" />
+                      <span>DAG Automation Workflows</span>
+                    </span>
+                    <span className="text-[10px] text-[#62666d] font-mono">⌘2</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#202535]" />
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("smtp_connect");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>SMTP Relays & Port 2525 Auth</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("kumomta");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Server className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>MTA Spool & Outbound Queues</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* HELP MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("help")}
+              onMouseEnter={() => handleMenuHover("help")}
+              className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                openMenu === "help" ? "bg-[#1f2433] text-[#f7f8f8]" : "hover:bg-[#18191a] hover:text-[#f7f8f8]"
+              }`}
+            >
+              Help
+            </button>
+            {openMenu === "help" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-64 bg-[#14151a] border border-[#262c3b] rounded-xl shadow-2xl py-1 text-xs text-[#d0d6e0]">
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("docs");
+                    }}
+                    className="w-full text-left px-3.5 py-2 hover:bg-[#1e2333] hover:text-[#ff69b4] flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <BookOpen className="w-4 h-4 text-[#ff69b4]" />
+                    <div>
+                      <span className="font-semibold block text-white">Interactive User Guide & Docs</span>
+                      <span className="text-[10px] text-[#8a8f98]">Visual guide with UI diagrams</span>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("sandbox");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>SMTP Test Sandbox</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#202535]" />
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      openApp("terminal");
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-[#f7f8f8] flex items-center gap-2 cursor-pointer"
+                  >
+                    <Terminal className="w-3.5 h-3.5 text-[#8a8f98]" />
+                    <span>MTA Command-Line Console</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Right System Tray */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
+        {/* Dedicated "i" Docs Button (User Requested) */}
+        <button
+          onClick={() => openApp("docs")}
+          title="Open ZMAIL Interactive Guide & Architecture Documentation"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 border border-[#ff69b4]/40 text-[#ff69b4] font-bold text-[11px] shadow-sm transition-all cursor-pointer"
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          <span>📘 Docs Guide</span>
+        </button>
+
         {/* Quick Search Trigger */}
         <button
           onClick={toggleCommandPalette}
-          className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded bg-[#141516] hover:bg-[#1a1b1d] border border-[#23252a] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors"
+          className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded bg-[#141516] hover:bg-[#1a1b1d] border border-[#23252a] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors cursor-pointer"
         >
           <Search className="w-3 h-3" />
           <span className="text-[11px]">Quick Search</span>
@@ -197,7 +628,7 @@ export const TopMenuBar: React.FC = () => {
         <div className="hidden lg:flex items-center gap-3 px-2 py-0.5 rounded bg-[#0f1011] border border-[#23252a] text-[11px]">
           <div className="flex items-center gap-1.5">
             <CheckCircle2 className="w-3 h-3 text-[#27a644]" />
-            <span>{clusterStatus.nodesOnline}/{clusterStatus.nodesTotal} Servers Online</span>
+            <span>{clusterStatus.nodesOnline}/{clusterStatus.nodesTotal} Online</span>
           </div>
           <span className="text-[#34343a]">|</span>
           <div className="flex items-center gap-1 text-[#3b9eff] font-mono">
@@ -212,11 +643,11 @@ export const TopMenuBar: React.FC = () => {
         {/* System Health Pulse Indicator */}
         <div
           title="System Status: All email servers online and synchronized"
-          className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#ff69b4]/10 border border-[#ff69b4]/30 text-[10px] text-[#ff69b4] cursor-help"
+          className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#27a644]/10 border border-[#27a644]/30 text-[10px] text-[#27a644] cursor-help"
         >
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ff69b4] opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#ff69b4]"></span>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#27a644] opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#27a644]"></span>
           </span>
           <span className="hidden sm:inline font-medium">All Systems Normal</span>
         </div>
@@ -224,7 +655,7 @@ export const TopMenuBar: React.FC = () => {
         {/* Notifications */}
         <button
           onClick={toggleNotificationCenter}
-          className="relative p-1 rounded hover:bg-[#18191a] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors"
+          className="relative p-1 rounded hover:bg-[#18191a] text-[#8a8f98] hover:text-[#f7f8f8] transition-colors cursor-pointer"
           title="Notifications"
         >
           <Bell className="w-3.5 h-3.5" />

@@ -172,6 +172,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/v1/contacts", s.handleUpdateContact)
 	s.mux.HandleFunc("DELETE /api/v1/contacts", s.handleDeleteContact)
 
+	// Real-Time Lead Hygiene & Syntax/MX Verifier Endpoints
+	s.mux.HandleFunc("POST /api/v1/verifier/single", s.handleVerifySingleEmail)
+	s.mux.HandleFunc("POST /api/v1/verifier/bulk", s.handleVerifyBulkEmails)
+	s.mux.HandleFunc("POST /api/v1/verifier/import-clean", s.handleImportCleanLeads)
+
 	// Pre-Flight Seed Placement Simulator Endpoint
 	s.mux.HandleFunc("POST /api/v1/seed/preflight", s.handleSeedPreflightTest)
 

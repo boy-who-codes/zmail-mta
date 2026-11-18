@@ -21,6 +21,7 @@ import {
   KeyRound,
   Webhook,
   FileCode2,
+  BookOpen,
 } from "lucide-react";
 
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -41,6 +42,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   KeyRound,
   Webhook,
   FileCode2,
+  BookOpen,
 };
 
 export const Dock: React.FC = () => {
@@ -57,9 +59,26 @@ export const Dock: React.FC = () => {
 
           return (
             <div key={app.id} className="relative group flex flex-col items-center flex-shrink-0">
-              {/* Tooltip */}
-              <div className="absolute -top-10 px-2.5 py-1 rounded-md bg-[#18191a] border border-[#2b2d33] text-[11px] text-[#f7f8f8] shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                {app.title}
+              {/* Rich Multi-Line Tooltip */}
+              <div className="absolute -top-24 px-3 py-2 rounded-xl bg-[#12141c]/95 backdrop-blur-md border border-[#2b2f3d] shadow-2xl opacity-0 group-hover:opacity-100 transition-all duration-200 pointer-events-none z-50 w-64 -translate-y-1 group-hover:translate-y-0 text-left">
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <span className="font-bold text-xs text-white truncate">{app.title}</span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#ff69b4]/15 text-[#ff69b4] border border-[#ff69b4]/30 uppercase shrink-0 font-semibold">
+                    {app.category}
+                  </span>
+                </div>
+                <p className="text-[10px] text-[#8a8f98] leading-tight line-clamp-2">
+                  {app.description}
+                </p>
+                <div className="flex items-center justify-between pt-1.5 mt-1.5 border-t border-[#1e2330] text-[9px] font-mono">
+                  <span className={isOpen ? "text-[#27a644] flex items-center gap-1 font-semibold" : "text-[#62666d]"}>
+                    {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-[#27a644] animate-pulse" />}
+                    {isOpen ? "Running" : "Click to launch"}
+                  </span>
+                  <span className="text-[#62666d]">{app.shortTitle}</span>
+                </div>
+                {/* Downward triangle caret */}
+                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-[#12141c] border-r border-b border-[#2b2f3d] rotate-45" />
               </div>
 
               {/* App Icon Button - Auto-adjusts size per screen breakpoint */}

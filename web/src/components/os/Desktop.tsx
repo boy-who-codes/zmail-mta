@@ -27,6 +27,7 @@ import {
   Webhook,
   FileCode2,
   Mail,
+  BookOpen,
 } from "lucide-react";
 
 // App component imports
@@ -49,6 +50,7 @@ import { SystemSettingsApp } from "../apps/SystemSettingsApp";
 import { SmtpConnectApp } from "../apps/SmtpConnectApp";
 import { MailboxesApp } from "../apps/MailboxesApp";
 import { WebmailApp } from "../apps/WebmailApp";
+import { DocsApp } from "../apps/DocsApp";
 
 const APP_COMPONENT_MAP: Record<string, React.FC> = {
   campaigns: CampaignsApp,
@@ -70,6 +72,7 @@ const APP_COMPONENT_MAP: Record<string, React.FC> = {
   terminal: TerminalApp,
   settings: SystemSettingsApp,
   smtp_connect: SmtpConnectApp,
+  docs: DocsApp,
 };
 
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -91,6 +94,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   Webhook,
   FileCode2,
   Mail,
+  BookOpen,
 };
 
 const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: React.ReactNode }> = {
