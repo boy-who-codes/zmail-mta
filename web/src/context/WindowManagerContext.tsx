@@ -1,18 +1,18 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { AppId, WindowInstance, ClusterStatus, SystemNotification } from "../types/os";
+import { AppId, WindowInstance, ClusterStatus, SystemNotification, AuthUser } from "../types/os";
 import { APPS, INITIAL_CLUSTER_STATUS, INITIAL_NOTIFICATIONS } from "../data/mockData";
-import { fetchSystemStatus } from "../lib/api";
+import { fetchSystemStatus, getAuthMe, clearAuthSession } from "../lib/api";
 
 export type WallpaperId = "obsidian" | "midnight" | "matrix" | "aurora" | "slate" | "cosmic";
 
 export interface AccessibilitySettings {
+  dimInactiveWindows: boolean;
   highContrast: boolean;
   reducedMotion: boolean;
   textScale: "compact" | "normal" | "large";
   enhancedFocus: boolean;
-  dimInactiveWindows: boolean;
 }
 
 interface WindowManagerContextType {
@@ -28,6 +28,11 @@ interface WindowManagerContextType {
   setShowCenterLogo: (show: boolean) => void;
   accessibility: AccessibilitySettings;
   updateAccessibility: (settings: Partial<AccessibilitySettings>) => void;
+  currentUser: AuthUser | null;
+  isLocked: boolean;
+  lockScreen: () => void;
+  unlockScreen: (user: AuthUser) => void;
+  logout: () => void;
   openApp: (appId: AppId) => void;
   closeWindow: (windowId: string) => void;
   minimizeWindow: (windowId: string) => void;
@@ -53,6 +58,10 @@ export function WindowManagerProvider({ children }: { children: React.ReactNode 
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
+  // Authentication & Screen Lock State (GNOME GDM parity)
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [isLocked, setIsLocked] = useState<boolean>(true);
+
   // Wallpaper & Accessibility State
   const [wallpaper, setWallpaperState] = useState<WallpaperId>("obsidian");
   const [showCenterLogo, setShowCenterLogoState] = useState<boolean>(true);
@@ -63,6 +72,44 @@ export function WindowManagerProvider({ children }: { children: React.ReactNode 
     enhancedFocus: false,
     dimInactiveWindows: false,
   });
+
+  // Verify authentication session on client mount
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const initAuth = async () => {
+      try {
+        const raw = localStorage.getItem("mailops_auth_session");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.token) {
+            const user = await getAuthMe().catch(() => null);
+            if (user) {
+              setCurrentUser(user);
+              setIsLocked(false);
+              return;
+            }
+          }
+        }
+      } catch {}
+      setIsLocked(true);
+    };
+    initAuth();
+  }, []);
+
+  const unlockScreen = (user: AuthUser) => {
+    setCurrentUser(user);
+    setIsLocked(false);
+  };
+
+  const lockScreen = () => {
+    setIsLocked(true);
+  };
+
+  const logout = () => {
+    clearAuthSession();
+    setCurrentUser(null);
+    setIsLocked(true);
+  };
 
   // Load persisted preferences from localStorage
   useEffect(() => {
@@ -329,6 +376,11 @@ export function WindowManagerProvider({ children }: { children: React.ReactNode 
         setShowCenterLogo,
         accessibility,
         updateAccessibility,
+        currentUser,
+        isLocked,
+        lockScreen,
+        unlockScreen,
+        logout,
         openApp,
         closeWindow,
         minimizeWindow,

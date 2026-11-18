@@ -16,6 +16,11 @@ import {
   Pause,
   RotateCcw,
   SlidersHorizontal,
+  ShieldCheck,
+  Shield,
+  Activity,
+  Zap,
+  Lock,
 } from "lucide-react";
 import {
   fetchNodes,
@@ -26,6 +31,15 @@ import {
   saveRateLimit,
   deleteRateLimit,
   performQueueAction,
+  fetchKumoLiveQueues,
+  fetchKumoSuspensions,
+  fetchKumoBounces,
+  suspendKumoQueue,
+  resumeKumoQueue,
+  bounceKumoQueue,
+  KumoLiveQueue,
+  KumoSuspendRule,
+  KumoBounceRule,
 } from "../../lib/api";
 
 interface RateLimit {
@@ -62,15 +76,60 @@ export const KumoMtaApp: React.FC = () => {
   const [ruleMsgRate, setRuleMsgRate] = useState<string>("50/s");
   const [isSubmittingRule, setIsSubmittingRule] = useState<boolean>(false);
 
+  // KumoMTA Live Spool & Admin Rules State
+  const [kumoQueues, setKumoQueues] = useState<KumoLiveQueue[]>([]);
+  const [kumoSuspensions, setKumoSuspensions] = useState<KumoSuspendRule[]>([]);
+  const [kumoBounces, setKumoBounces] = useState<KumoBounceRule[]>([]);
+
+  const handleSuspendDomain = async (domain: string) => {
+    try {
+      await suspendKumoQueue(domain, "Administratively suspended from KumoMTA Console", "2h");
+      setActionNotice(`Suspended deliveries to ${domain} in KumoMTA for 2 hours`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || "Failed to suspend queue");
+    }
+  };
+
+  const handleResumeDomain = async (domain: string) => {
+    try {
+      await resumeKumoQueue(domain);
+      setActionNotice(`Resumed outgoing deliveries to ${domain} in KumoMTA`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || "Failed to resume queue");
+    }
+  };
+
+  const handleBounceDomain = async (domain: string) => {
+    if (!confirm(`Are you sure you want to administratively purge/bounce all queued messages for ${domain}? This removes them from the RocksDB spool.`)) {
+      return;
+    }
+    try {
+      await bounceKumoQueue(domain, "Purged from KumoMTA Console", "5m");
+      setActionNotice(`Purged queued messages for ${domain} in KumoMTA`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || "Failed to bounce queue");
+    }
+  };
+
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [nodesData, queuesData, policy, limitsData] = await Promise.all([
+      const [nodesData, queuesData, policy, limitsData, liveQueues, suspensions, bounces] = await Promise.all([
         fetchNodes().catch(() => []),
         fetchQueues().catch(() => []),
         fetchKumoLuaPolicy().catch(() => "-- Generating policy..."),
         fetchRateLimits().catch(() => []),
+        fetchKumoLiveQueues().catch(() => []),
+        fetchKumoSuspensions().catch(() => []),
+        fetchKumoBounces().catch(() => []),
       ]);
+
+      setKumoQueues(liveQueues || []);
+      setKumoSuspensions(suspensions || []);
+      setKumoBounces(bounces || []);
 
       if (Array.isArray(nodesData)) {
         setNodes(
@@ -280,178 +339,301 @@ export const KumoMtaApp: React.FC = () => {
         </div>
       )}
 
-      {/* Main Tab Content */}
-      <div className="flex-1 overflow-auto p-4">
-        {activeTab === "nodes" && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
-                <div className="text-[#8a8f98] text-[11px]">Message Spool Storage</div>
-                <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5">
-                  {primaryNode ? primaryNode.spool_text : "0 GB of 0 GB"}
+        {/* Main Tab Content */}
+        <div className="flex-1 overflow-auto p-4">
+          {activeTab === "nodes" && (
+            <div className="space-y-4">
+              {/* DKIM In-Memory Wire-Speed Engine Status */}
+              <div className="p-4 rounded-xl bg-gradient-to-r from-[#12131a] to-[#181124] border border-[#5e6ad2]/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#5e6ad2]/15 border border-[#5e6ad2]/40 flex items-center justify-center shrink-0">
+                    <ShieldCheck className="w-5 h-5 text-[#5e6ad2]" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-[#f7f8f8] text-sm">
+                        Wire-Speed Cryptographic DKIM Engine
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[#27a644]/15 text-[#27a644] border border-[#27a644]/30">
+                        ACTIVE · PORT 2525
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#8a8f98] mt-0.5">
+                      Messages received on port 2525 are signed in-memory using 2048-bit RSA keys fetched and memoized from the control plane with 10-minute LRU caching.
+                    </p>
+                  </div>
                 </div>
-                <div className="w-full bg-[#1e2023] h-1.5 rounded-full mt-2.5 overflow-hidden">
-                  <div
-                    className="bg-[#5e6ad2] h-full"
-                    style={{ width: primaryNode ? primaryNode.spool : "0%" }}
-                  />
+                <div className="flex items-center gap-3 self-end md:self-auto shrink-0">
+                  <div className="text-right">
+                    <div className="text-[10px] text-[#8a8f98]">RFC 6376 Algorithm</div>
+                    <div className="text-xs font-mono font-bold text-[#f7f8f8]">rsa-sha256 / 2048b</div>
+                  </div>
+                  <div className="h-6 w-px bg-[#23252a]" />
+                  <div className="text-right">
+                    <div className="text-[10px] text-[#8a8f98]">Key Memoize Cache</div>
+                    <div className="text-xs font-mono font-bold text-[#27a644]">10m TTL / 128 Cap</div>
+                  </div>
                 </div>
               </div>
-              <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
-                <div className="text-[#8a8f98] text-[11px]">Host Status & Load</div>
-                <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5 font-mono">
-                  {primaryNode ? `CPU: ${primaryNode.cpu.toFixed(1)}%` : "Standby"}
-                </div>
-                <div className="text-[10px] text-[#27a644] mt-1">Host telemetry operational</div>
-              </div>
-              <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
-                <div className="text-[#8a8f98] text-[11px]">Queue Depth</div>
-                <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5 font-mono">
-                  {totalQueued} messages
-                </div>
-                <div className="text-[10px] text-[#27a644] mt-1">
-                  {totalQueued === 0 ? "All queues clean & delivered" : "Processing queue"}
-                </div>
-              </div>
-            </div>
 
-            {/* Servers Table */}
-            <div className="border border-[#23252a] rounded-xl overflow-hidden bg-[#0f1011]">
-              <div className="px-3.5 py-2.5 bg-[#141516] border-b border-[#23252a] font-medium text-[#d0d6e0] flex items-center justify-between">
-                <span className="font-semibold text-[#f7f8f8]">Observed Sending Nodes</span>
-                <span className="text-[10px] text-[#8a8f98]">Live System Inspection</span>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
+                  <div className="text-[#8a8f98] text-[11px]">Message Spool Storage</div>
+                  <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5">
+                    {primaryNode ? primaryNode.spool_text : "0 GB of 0 GB"}
+                  </div>
+                  <div className="w-full bg-[#1e2023] h-1.5 rounded-full mt-2.5 overflow-hidden">
+                    <div
+                      className="bg-[#5e6ad2] h-full"
+                      style={{ width: primaryNode ? primaryNode.spool : "0%" }}
+                    />
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
+                  <div className="text-[#8a8f98] text-[11px]">Host Status & Load</div>
+                  <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5 font-mono">
+                    {primaryNode ? `CPU: ${primaryNode.cpu.toFixed(1)}%` : "Standby"}
+                  </div>
+                  <div className="text-[10px] text-[#27a644] mt-1">Host telemetry operational</div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-[#0f1011] border border-[#23252a]">
+                  <div className="text-[#8a8f98] text-[11px]">Queue Depth</div>
+                  <div className="text-lg font-semibold text-[#f7f8f8] mt-0.5 font-mono">
+                    {totalQueued} messages
+                  </div>
+                  <div className="text-[10px] text-[#27a644] mt-1">
+                    {totalQueued === 0 ? "All queues clean & delivered" : "Processing queue"}
+                  </div>
+                </div>
               </div>
-              <table className="w-full text-left">
-                <thead className="text-[10px] uppercase text-[#62666d] bg-[#101113] border-b border-[#23252a]">
-                  <tr>
-                    <th className="px-3.5 py-2">Server Name</th>
-                    <th className="px-3.5 py-2">Sending IP</th>
-                    <th className="px-3.5 py-2">Location</th>
-                    <th className="px-3.5 py-2">Spool Usage</th>
-                    <th className="px-3.5 py-2">Waiting in Spool</th>
-                    <th className="px-3.5 py-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1e2023] text-[11px]">
-                  {nodes.map((node) => (
-                    <tr key={node.name} className="hover:bg-[#141516]">
-                      <td className="px-3.5 py-2.5 text-[#f7f8f8] font-medium flex items-center gap-1.5">
-                        <Server className="w-3.5 h-3.5 text-[#5e6ad2]" />
-                        {node.name}
-                      </td>
-                      <td className="px-3.5 py-2.5 font-mono text-[#8a8f98]">{node.ip}</td>
-                      <td className="px-3.5 py-2.5 text-[#8a8f98]">{node.region}</td>
-                      <td className="px-3.5 py-2.5 font-mono">{node.spool}</td>
-                      <td className="px-3.5 py-2.5 text-[#f7f8f8] font-mono">{node.queue}</td>
-                      <td className="px-3.5 py-2.5">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#27a644]/15 text-[#27a644] border border-[#27a644]/30">
-                          Online & Healthy
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
 
-        {/* OUTGOING QUEUES WITH ACTIONS */}
-        {activeTab === "queues" && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between pb-1">
-              <div>
-                <span className="text-xs font-semibold text-[#f7f8f8]">Outgoing Destination Queues</span>
-                <p className="text-[11px] text-[#8a8f98] mt-0.5">
-                  Manage spooled messages waiting to send. Flush retries, pause queues, or clear spooled batches.
-                </p>
-              </div>
-              <button
-                onClick={loadData}
-                className="px-2.5 py-1 rounded bg-[#18191a] hover:bg-[#23252a] text-[#f7f8f8] border border-[#2b2d33] flex items-center gap-1"
-              >
-                <RefreshCw className="w-3 h-3" /> Refresh Queues
-              </button>
-            </div>
-
-            {queues.length === 0 ? (
-              <div className="p-8 border border-[#23252a] rounded-xl bg-[#0f1011] text-center flex flex-col items-center justify-center">
-                <Inbox className="w-8 h-8 text-[#62666d] mb-2 stroke-[1.5]" />
-                <h4 className="font-medium text-[#d0d6e0] mb-1">All Outgoing Queues Are Clear</h4>
-                <p className="text-[11px] text-[#8a8f98] max-w-sm mb-3">
-                  There are no messages waiting to send in the spool. Outbound messages will appear here grouped by destination domain.
-                </p>
-                <button
-                  onClick={() => setActiveTab("test")}
-                  className="px-3 py-1.5 bg-[#5e6ad2] hover:bg-[#4f5ac0] text-white rounded text-[11px] font-medium flex items-center gap-1.5 transition-colors"
-                >
-                  <Send className="w-3 h-3" />
-                  <span>Send a Test Message</span>
-                </button>
-              </div>
-            ) : (
+              {/* Servers Table */}
               <div className="border border-[#23252a] rounded-xl overflow-hidden bg-[#0f1011]">
+                <div className="px-3.5 py-2.5 bg-[#141516] border-b border-[#23252a] font-medium text-[#d0d6e0] flex items-center justify-between">
+                  <span className="font-semibold text-[#f7f8f8]">Observed Sending Nodes</span>
+                  <span className="text-[10px] text-[#8a8f98]">Live System Inspection</span>
+                </div>
                 <table className="w-full text-left">
                   <thead className="text-[10px] uppercase text-[#62666d] bg-[#101113] border-b border-[#23252a]">
                     <tr>
-                      <th className="px-3.5 py-2">Destination Domain</th>
+                      <th className="px-3.5 py-2">Server Name</th>
+                      <th className="px-3.5 py-2">Sending IP</th>
+                      <th className="px-3.5 py-2">Location</th>
+                      <th className="px-3.5 py-2">Spool Usage</th>
                       <th className="px-3.5 py-2">Waiting in Spool</th>
-                      <th className="px-3.5 py-2">Delayed</th>
-                      <th className="px-3.5 py-2">Bounced</th>
-                      <th className="px-3.5 py-2">Delivery Policy</th>
-                      <th className="px-3.5 py-2 text-right">Queue Operations</th>
+                      <th className="px-3.5 py-2">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1e2023] text-[11px]">
-                    {queues.map((q) => (
-                      <tr key={q.domain} className="hover:bg-[#141516] transition-colors">
-                        <td className="px-3.5 py-2.5 text-[#f7f8f8] font-medium">{q.domain}</td>
-                        <td className="px-3.5 py-2.5 text-[#27a644] font-mono font-bold">{q.ready}</td>
-                        <td className="px-3.5 py-2.5 text-[#ffc53d] font-mono">{q.deferred}</td>
-                        <td className="px-3.5 py-2.5 text-[#ff2047] font-mono">{q.bounced}</td>
-                        <td className="px-3.5 py-2.5 text-[#d0d6e0]">{q.policy}</td>
-                        <td className="px-3.5 py-2.5 text-right space-x-1.5">
-                          <button
-                            onClick={() => handleQueueAction(q.domain, "flush")}
-                            title="Force flush and retry delayed emails now"
-                            className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#27a644] border border-[#23252a] font-medium"
-                          >
-                            <RotateCcw className="w-3 h-3 inline mr-1" />
-                            Retry Now
-                          </button>
-                          <button
-                            onClick={() => handleQueueAction(q.domain, "pause")}
-                            title="Pause sending to this destination"
-                            className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#ffc53d] border border-[#23252a]"
-                          >
-                            <Pause className="w-3 h-3 inline mr-1" />
-                            Pause
-                          </button>
-                          <button
-                            onClick={() => handleQueueAction(q.domain, "resume")}
-                            title="Resume sending"
-                            className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#3b9eff] border border-[#23252a]"
-                          >
-                            <Play className="w-3 h-3 inline mr-1" />
-                            Resume
-                          </button>
-                          <button
-                            onClick={() => handleQueueAction(q.domain, "clear")}
-                            title="Clear spooled messages for this queue"
-                            className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#ff2047]/20 text-[#8a8f98] hover:text-[#ff2047] border border-[#23252a]"
-                          >
-                            <Trash2 className="w-3 h-3 inline mr-1" />
-                            Clear
-                          </button>
+                    {nodes.map((node) => (
+                      <tr key={node.name} className="hover:bg-[#141516]">
+                        <td className="px-3.5 py-2.5 text-[#f7f8f8] font-medium flex items-center gap-1.5">
+                          <Server className="w-3.5 h-3.5 text-[#5e6ad2]" />
+                          {node.name}
+                        </td>
+                        <td className="px-3.5 py-2.5 font-mono text-[#8a8f98]">{node.ip}</td>
+                        <td className="px-3.5 py-2.5 text-[#8a8f98]">{node.region}</td>
+                        <td className="px-3.5 py-2.5 font-mono">{node.spool}</td>
+                        <td className="px-3.5 py-2.5 text-[#f7f8f8] font-mono">{node.queue}</td>
+                        <td className="px-3.5 py-2.5">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#27a644]/15 text-[#27a644] border border-[#27a644]/30">
+                            Online & Healthy
+                          </span>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+
+          {/* OUTGOING QUEUES WITH ACTIONS */}
+          {activeTab === "queues" && (
+            <div className="space-y-4">
+              {/* Suspended Outbound Domains Notice */}
+              {kumoSuspensions.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-[#ffc53d]/10 border border-[#ffc53d]/30">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold text-[#ffc53d] flex items-center gap-2">
+                      <Pause className="w-4 h-4" /> Active KumoMTA Queue Suspensions ({kumoSuspensions.length})
+                    </span>
+                    <span className="text-[10px] text-[#8a8f98]">Temporarily paused in-memory</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                    {kumoSuspensions.map((s, idx) => (
+                      <div key={s.id || idx} className="p-2.5 rounded-lg bg-[#0f1011] border border-[#23252a] flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-[#f7f8f8]">{s.domain || "All Domains"}</div>
+                          <div className="text-[10px] text-[#8a8f98] truncate max-w-[180px]">{s.reason}</div>
+                          <div className="text-[9px] text-[#ffc53d] mt-0.5">Remaining: {s.duration}</div>
+                        </div>
+                        <button
+                          onClick={() => handleResumeDomain(s.domain)}
+                          className="px-2 py-1 rounded bg-[#27a644]/20 hover:bg-[#27a644]/30 text-[#27a644] text-[10px] font-medium border border-[#27a644]/30"
+                        >
+                          Resume
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Active Scheduled Queues from Kumo RocksDB Engine */}
+              {kumoQueues.length > 0 && (
+                <div className="border border-[#5e6ad2]/30 rounded-xl overflow-hidden bg-[#0f1011]">
+                  <div className="px-3.5 py-2.5 bg-[#141516] border-b border-[#23252a] flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold text-[#f7f8f8] flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5 text-[#5e6ad2]" /> Live RocksDB Spool Queues
+                      </span>
+                      <p className="text-[10px] text-[#8a8f98] mt-0.5">
+                        Real-time destination scheduled counts from KumoMTA admin engine.
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-[#5e6ad2]/20 text-[#5e6ad2] font-mono border border-[#5e6ad2]/40">
+                      {kumoQueues.length} Active Target Queues
+                    </span>
+                  </div>
+                  <table className="w-full text-left">
+                    <thead className="text-[10px] uppercase text-[#62666d] bg-[#101113] border-b border-[#23252a]">
+                      <tr>
+                        <th className="px-3.5 py-2">Queue Name</th>
+                        <th className="px-3.5 py-2">Target Domain</th>
+                        <th className="px-3.5 py-2">Scheduled in Spool</th>
+                        <th className="px-3.5 py-2 text-right">Administrative Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1e2023] text-[11px]">
+                      {kumoQueues.map((kq) => (
+                        <tr key={kq.queue_name} className="hover:bg-[#141516]">
+                          <td className="px-3.5 py-2.5 font-mono text-[#d0d6e0]">{kq.queue_name}</td>
+                          <td className="px-3.5 py-2.5 font-medium text-[#f7f8f8]">{kq.domain}</td>
+                          <td className="px-3.5 py-2.5 font-mono font-bold text-[#27a644]">{kq.count}</td>
+                          <td className="px-3.5 py-2.5 text-right space-x-1.5">
+                            <button
+                              onClick={() => handleSuspendDomain(kq.domain)}
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#ffc53d] border border-[#23252a]"
+                            >
+                              <Pause className="w-3 h-3 inline mr-1" />
+                              Suspend Outbound
+                            </button>
+                            <button
+                              onClick={() => handleResumeDomain(kq.domain)}
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#3b9eff] border border-[#23252a]"
+                            >
+                              <Play className="w-3 h-3 inline mr-1" />
+                              Resume
+                            </button>
+                            <button
+                              onClick={() => handleBounceDomain(kq.domain)}
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#ff2047]/20 text-[#8a8f98] hover:text-[#ff2047] border border-[#23252a]"
+                            >
+                              <Trash2 className="w-3 h-3 inline mr-1" />
+                              Purge Spool
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pb-1">
+                <div>
+                  <span className="text-xs font-semibold text-[#f7f8f8]">Domain Delivery Queues</span>
+                  <p className="text-[11px] text-[#8a8f98] mt-0.5">
+                    Manage spooled messages waiting to send. Flush retries, pause queues, or clear spooled batches.
+                  </p>
+                </div>
+                <button
+                  onClick={loadData}
+                  className="px-2.5 py-1 rounded bg-[#18191a] hover:bg-[#23252a] text-[#f7f8f8] border border-[#2b2d33] flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh Queues
+                </button>
+              </div>
+
+              {queues.length === 0 && kumoQueues.length === 0 ? (
+                <div className="p-8 border border-[#23252a] rounded-xl bg-[#0f1011] text-center flex flex-col items-center justify-center">
+                  <Inbox className="w-8 h-8 text-[#62666d] mb-2 stroke-[1.5]" />
+                  <h4 className="font-medium text-[#d0d6e0] mb-1">All Outgoing Queues Are Clear</h4>
+                  <p className="text-[11px] text-[#8a8f98] max-w-sm mb-3">
+                    There are no messages waiting to send in the spool. Outbound messages will appear here grouped by destination domain.
+                  </p>
+                  <button
+                    onClick={() => setActiveTab("test")}
+                    className="px-3 py-1.5 bg-[#5e6ad2] hover:bg-[#4f5ac0] text-white rounded text-[11px] font-medium flex items-center gap-1.5 transition-colors"
+                  >
+                    <Send className="w-3 h-3" />
+                    <span>Send a Test Message</span>
+                  </button>
+                </div>
+              ) : queues.length > 0 ? (
+                <div className="border border-[#23252a] rounded-xl overflow-hidden bg-[#0f1011]">
+                  <table className="w-full text-left">
+                    <thead className="text-[10px] uppercase text-[#62666d] bg-[#101113] border-b border-[#23252a]">
+                      <tr>
+                        <th className="px-3.5 py-2">Destination Domain</th>
+                        <th className="px-3.5 py-2">Waiting in Spool</th>
+                        <th className="px-3.5 py-2">Delayed</th>
+                        <th className="px-3.5 py-2">Bounced</th>
+                        <th className="px-3.5 py-2">Delivery Policy</th>
+                        <th className="px-3.5 py-2 text-right">Queue Operations</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1e2023] text-[11px]">
+                      {queues.map((q) => (
+                        <tr key={q.domain} className="hover:bg-[#141516] transition-colors">
+                          <td className="px-3.5 py-2.5 text-[#f7f8f8] font-medium">{q.domain}</td>
+                          <td className="px-3.5 py-2.5 text-[#27a644] font-mono font-bold">{q.ready}</td>
+                          <td className="px-3.5 py-2.5 text-[#ffc53d] font-mono">{q.deferred}</td>
+                          <td className="px-3.5 py-2.5 text-[#ff2047] font-mono">{q.bounced}</td>
+                          <td className="px-3.5 py-2.5 text-[#d0d6e0]">{q.policy}</td>
+                          <td className="px-3.5 py-2.5 text-right space-x-1.5">
+                            <button
+                              onClick={() => handleQueueAction(q.domain, "flush")}
+                              title="Force flush and retry delayed emails now"
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#27a644] border border-[#23252a] font-medium"
+                            >
+                              <RotateCcw className="w-3 h-3 inline mr-1" />
+                              Retry Now
+                            </button>
+                            <button
+                              onClick={() => handleSuspendDomain(q.domain)}
+                              title="Pause sending to this destination in KumoMTA"
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#ffc53d] border border-[#23252a]"
+                            >
+                              <Pause className="w-3 h-3 inline mr-1" />
+                              Pause
+                            </button>
+                            <button
+                              onClick={() => handleResumeDomain(q.domain)}
+                              title="Resume sending in KumoMTA"
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] text-[#3b9eff] border border-[#23252a]"
+                            >
+                              <Play className="w-3 h-3 inline mr-1" />
+                              Resume
+                            </button>
+                            <button
+                              onClick={() => handleBounceDomain(q.domain)}
+                              title="Purge spooled messages for this queue"
+                              className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#ff2047]/20 text-[#8a8f98] hover:text-[#ff2047] border border-[#23252a]"
+                            >
+                              <Trash2 className="w-3 h-3 inline mr-1" />
+                              Clear
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          )}
 
         {/* RATE LIMITS & SHAPING CRUD TAB */}
         {activeTab === "rules" && (

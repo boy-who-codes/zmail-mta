@@ -52,6 +52,8 @@ import { MailboxesApp } from "../apps/MailboxesApp";
 import { WebmailApp } from "../apps/WebmailApp";
 import { DocsApp } from "../apps/DocsApp";
 
+import { GnomeLoginPanel } from "./GnomeLoginPanel";
+
 const APP_COMPONENT_MAP: Record<string, React.FC> = {
   campaigns: CampaignsApp,
   mailboxes: MailboxesApp,
@@ -140,7 +142,7 @@ const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: Rea
 };
 
 export const Desktop: React.FC = () => {
-  const { windows, openApp, wallpaper, accessibility } = useWindowManager();
+  const { windows, openApp, wallpaper, accessibility, isLocked } = useWindowManager();
 
   const currentWp = WALLPAPER_PRESETS[wallpaper] || WALLPAPER_PRESETS.obsidian;
 
@@ -154,51 +156,64 @@ export const Desktop: React.FC = () => {
       {/* Background Wallpaper with dynamic theme */}
       {currentWp.overlay}
 
-      {/* Top Menu Bar */}
-      <TopMenuBar />
+      {/* Main Desktop Container - Blurred and totally disabled when locked */}
+      <div
+        className={`relative flex flex-col w-full h-full ${
+          isLocked
+            ? "filter blur-2xl pointer-events-none select-none opacity-40 scale-[0.99] transition-all duration-500"
+            : "transition-all duration-500"
+        }`}
+        aria-hidden={isLocked}
+      >
+        {/* Top Menu Bar */}
+        <TopMenuBar />
 
-      {/* Desktop Workspace (Window Container & Desktop Icons) */}
-      <div className="relative flex-1 w-full h-full overflow-hidden">
-        {/* Desktop Icons Grid (Auto-wrapping columns as screen size/height changes) */}
-        <div className="absolute top-3 sm:top-4 left-3 sm:left-4 flex flex-col flex-wrap max-h-[calc(100vh-100px)] sm:max-h-[calc(100vh-120px)] gap-1.5 sm:gap-2.5 z-0 pointer-events-auto content-start">
-          {APPS.map((app) => {
-            const Icon = ICON_MAP[app.iconName] || Server;
+        {/* Desktop Workspace (Window Container & Desktop Icons) */}
+        <div className="relative flex-1 w-full h-full overflow-hidden">
+          {/* Desktop Icons Grid (Auto-wrapping columns as screen size/height changes) */}
+          <div className="absolute top-3 sm:top-4 left-3 sm:left-4 flex flex-col flex-wrap max-h-[calc(100vh-100px)] sm:max-h-[calc(100vh-120px)] gap-1.5 sm:gap-2.5 z-0 pointer-events-auto content-start">
+            {APPS.map((app) => {
+              const Icon = ICON_MAP[app.iconName] || Server;
+              return (
+                <button
+                  key={app.id}
+                  onClick={() => openApp(app.id)}
+                  className="w-16 sm:w-18 md:w-20 p-1 sm:p-1.5 md:p-2 rounded-xl flex flex-col items-center gap-1 sm:gap-1.5 text-center group hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+                >
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-lg sm:rounded-xl bg-[#0f1011] border border-[#23252a] group-hover:border-[#ff69b4]/50 shadow-md flex items-center justify-center transition-transform group-hover:scale-105 flex-shrink-0">
+                    <Icon className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-[#d0d6e0] group-hover:text-[#ff69b4] transition-colors" />
+                  </div>
+                  <span className="text-[10px] sm:text-[11px] text-[#d0d6e0] font-medium leading-tight line-clamp-2 drop-shadow-md max-w-[64px] sm:max-w-[76px]">
+                    {app.shortTitle}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Windows Rendering */}
+          {windows.map((win) => {
+            const AppComponent = APP_COMPONENT_MAP[win.appId];
             return (
-              <button
-                key={app.id}
-                onClick={() => openApp(app.id)}
-                className="w-16 sm:w-18 md:w-20 p-1 sm:p-1.5 md:p-2 rounded-xl flex flex-col items-center gap-1 sm:gap-1.5 text-center group hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
-              >
-                <div className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-lg sm:rounded-xl bg-[#0f1011] border border-[#23252a] group-hover:border-[#ff69b4]/50 shadow-md flex items-center justify-center transition-transform group-hover:scale-105 flex-shrink-0">
-                  <Icon className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-[#d0d6e0] group-hover:text-[#ff69b4] transition-colors" />
-                </div>
-                <span className="text-[10px] sm:text-[11px] text-[#d0d6e0] font-medium leading-tight line-clamp-2 drop-shadow-md max-w-[64px] sm:max-w-[76px]">
-                  {app.shortTitle}
-                </span>
-              </button>
+              <WindowFrame key={win.id} instance={win}>
+                {AppComponent ? <AppComponent /> : <div>App not found</div>}
+              </WindowFrame>
             );
           })}
         </div>
 
-        {/* Windows Rendering */}
-        {windows.map((win) => {
-          const AppComponent = APP_COMPONENT_MAP[win.appId];
-          return (
-            <WindowFrame key={win.id} instance={win}>
-              {AppComponent ? <AppComponent /> : <div>App not found</div>}
-            </WindowFrame>
-          );
-        })}
+        {/* Bottom Dock */}
+        <Dock />
+
+        {/* Command Palette Modal (⌘K) */}
+        {!isLocked && <CommandPalette />}
+
+        {/* Slide-out Notification Center */}
+        {!isLocked && <NotificationCenter />}
       </div>
 
-      {/* Bottom Dock */}
-      <Dock />
-
-      {/* Command Palette Modal (⌘K) */}
-      <CommandPalette />
-
-      {/* Slide-out Notification Center */}
-      <NotificationCenter />
+      {/* GNOME GDM Login Screen Panel Overlay */}
+      {isLocked && <GnomeLoginPanel />}
     </div>
   );
 };

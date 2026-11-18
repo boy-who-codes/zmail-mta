@@ -3,7 +3,10 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,6 +28,7 @@ import (
 	"mailops.io/backend/internal/dkim"
 	"mailops.io/backend/internal/ipdetect"
 	"mailops.io/backend/internal/ipmanager"
+	"mailops.io/backend/internal/kumomta"
 	"mailops.io/backend/internal/models"
 )
 
@@ -87,6 +91,7 @@ type Store struct {
 	systemSettings       models.SystemSettings
 	playbooks            map[string]models.AutomationPlaybook
 	smtpCredentials      map[string]models.SMTPCredential
+	kumoAdmin            *kumomta.AdminClient
 }
 
 // NewStore initializes a clean, unseeded store backed by persistent disk storage
@@ -98,6 +103,7 @@ func NewStore(dataFile string) *Store {
 	s := &Store{
 		filePath:        dataFile,
 		detector:        ipdetect.NewDetector(),
+		kumoAdmin:       kumomta.NewAdminClient(),
 		domains:         make(map[string]models.Domain),
 		ips:             make(map[string]models.SendingIP),
 		pools:           make(map[string]models.IPPool),
@@ -602,6 +608,45 @@ func (s *Store) GetDomain(nameOrId string) (*models.Domain, bool) {
 	return nil, false
 }
 
+// GetDomainDKIMKey retrieves or lazily provisions the 2048-bit RSA private key for KumoMTA signing
+func (s *Store) GetDomainDKIMKey(domainName string) (*dkim.KeyPair, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	domainName = strings.TrimSpace(strings.ToLower(domainName))
+	for id, d := range s.domains {
+		if strings.EqualFold(d.DomainName, domainName) {
+			selector := d.DKIMSelector
+			if selector == "" {
+				selector = "k202611"
+			}
+
+			// If private key is missing (e.g. legacy state), generate and persist it
+			if d.DKIMPrivateKey == "" {
+				kp, err := dkim.GenerateRSAKeyPair(selector, domainName)
+				if err == nil && kp != nil {
+					d.DKIMSelector = selector
+					d.DKIMPublicKey = kp.PublicKeyTXT
+					d.DKIMPrivateKey = kp.PrivateKeyPEM
+					s.domains[id] = d
+					s.saveLocked()
+					return kp, true
+				}
+			}
+
+			return &dkim.KeyPair{
+				Selector:      selector,
+				Domain:        domainName,
+				PrivateKeyPEM: d.DKIMPrivateKey,
+				PublicKeyTXT:  d.DKIMPublicKey,
+				DNSHost:       fmt.Sprintf("%s._domainkey.%s", selector, domainName),
+			}, true
+		}
+	}
+
+	return nil, false
+}
+
 func (s *Store) AddDomainWithDNS(domainName, selector, dkimPublicKey string) (*models.Domain, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -618,10 +663,12 @@ func (s *Store) AddDomainWithDNS(domainName, selector, dkimPublicKey string) (*m
 		}
 	}
 
+	var dkimPrivateKey string
 	if dkimPublicKey == "" {
 		kp, err := dkim.GenerateRSAKeyPair(selector, domainName)
 		if err == nil && kp != nil {
 			dkimPublicKey = kp.PublicKeyTXT
+			dkimPrivateKey = kp.PrivateKeyPEM
 		}
 	}
 
@@ -672,6 +719,7 @@ func (s *Store) AddDomainWithDNS(domainName, selector, dkimPublicKey string) (*m
 		PTRStatus:      "pending",
 		DKIMSelector:   selector,
 		DKIMPublicKey:  dkimPublicKey,
+		DKIMPrivateKey: dkimPrivateKey,
 		SPFRecord:      spfRecord,
 		DMARCRecord:    dmarcRecord,
 		MXRecord:       mxRecord,
@@ -702,13 +750,16 @@ func (s *Store) UpdateDomainStatus(domainName, spf, dkimStatus, dmarc, ptr strin
 	}
 }
 
-func (s *Store) UpdateDomainDKIM(domainName, selector, pubKey string) {
+func (s *Store) UpdateDomainDKIM(domainName, selector, pubKey, privKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, d := range s.domains {
 		if strings.EqualFold(d.DomainName, domainName) {
 			d.DKIMSelector = selector
 			d.DKIMPublicKey = pubKey
+			if privKey != "" {
+				d.DKIMPrivateKey = privKey
+			}
 			s.domains[id] = d
 			s.saveLocked()
 			return
@@ -1271,10 +1322,27 @@ func (s *Store) GetIPTelemetry() *ipmanager.OutboundTelemetry {
 	return ipmanager.GetCollector().CollectTelemetry(50)
 }
 
-// PerformQueueAction executes operational actions on a queue
+// PerformQueueAction executes operational actions on a queue both in-memory and via KumoMTA Live Admin API
 func (s *Store) PerformQueueAction(domain, action string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Forward operational command to KumoMTA RocksDB spool asynchronously
+	if s.kumoAdmin != nil {
+		go func(dom, act string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			switch act {
+			case "pause", "suspend":
+				_, _ = s.kumoAdmin.SuspendDomain(ctx, dom, "Administratively paused via MailOps Console", "24h")
+			case "resume":
+				_ = s.kumoAdmin.ResumeDomain(ctx, dom)
+			case "bounce", "clear":
+				_, _ = s.kumoAdmin.BounceDomain(ctx, dom, "Administratively purged via MailOps Console", "5m")
+			}
+		}(domain, action)
+	}
+
 	switch action {
 	case "flush":
 		for i := range s.messages {
@@ -1290,7 +1358,7 @@ func (s *Store) PerformQueueAction(domain, action string) error {
 			}
 		}
 		s.messages = newMsgs
-	case "pause":
+	case "pause", "suspend":
 		for i := range s.messages {
 			if strings.EqualFold(s.messages[i].Domain, domain) {
 				s.messages[i].Status = "temporarily_delayed"
@@ -1307,6 +1375,54 @@ func (s *Store) PerformQueueAction(domain, action string) error {
 	}
 	s.saveLocked()
 	return nil
+}
+
+// GetLiveKumoQueues returns live scheduled queues directly from KumoMTA RocksDB metrics
+func (s *Store) GetLiveKumoQueues(ctx context.Context) ([]kumomta.LiveScheduledQueue, error) {
+	if s.kumoAdmin == nil {
+		return nil, fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.GetLiveScheduledQueues(ctx)
+}
+
+// GetKumoSuspensions returns active administrative queue suspensions in KumoMTA
+func (s *Store) GetKumoSuspensions(ctx context.Context) ([]kumomta.SuspendRule, error) {
+	if s.kumoAdmin == nil {
+		return nil, fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.ListSuspensions(ctx)
+}
+
+// GetKumoBounces returns active administrative bounce rules in KumoMTA
+func (s *Store) GetKumoBounces(ctx context.Context) ([]kumomta.BounceRule, error) {
+	if s.kumoAdmin == nil {
+		return nil, fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.ListBounces(ctx)
+}
+
+// SuspendKumoDomain triggers a live queue freeze in KumoMTA
+func (s *Store) SuspendKumoDomain(ctx context.Context, domain, reason, duration string) (*kumomta.SuspendRule, error) {
+	if s.kumoAdmin == nil {
+		return nil, fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.SuspendDomain(ctx, domain, reason, duration)
+}
+
+// ResumeKumoDomain lifts a live queue freeze in KumoMTA
+func (s *Store) ResumeKumoDomain(ctx context.Context, domain string) error {
+	if s.kumoAdmin == nil {
+		return fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.ResumeDomain(ctx, domain)
+}
+
+// BounceKumoDomain triggers an administrative bounce/purge in KumoMTA
+func (s *Store) BounceKumoDomain(ctx context.Context, domain, reason, duration string) (*kumomta.BounceRule, error) {
+	if s.kumoAdmin == nil {
+		return nil, fmt.Errorf("kumo admin client uninitialized")
+	}
+	return s.kumoAdmin.BounceDomain(ctx, domain, reason, duration)
 }
 
 // DeleteMessage deletes a single spooled test email
@@ -3605,14 +3721,52 @@ func generateSecureAPIKey() (string, string) {
 	return rawKey, prefix
 }
 
-// GetSubaccounts returns all registered enterprise sub-accounts
+// HashPassword generates a salted HMAC-SHA256 hash of a plaintext password
+func HashPassword(password string) string {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		salt = []byte("mailops-salt-xyz")
+	}
+	h := hmac.New(sha256.New, salt)
+	h.Write([]byte(password))
+	return hex.EncodeToString(salt) + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifyPassword performs constant-time verification of a password against a stored salted hash
+func VerifyPassword(password, storedHash string) bool {
+	if storedHash == "" || password == "" {
+		return false
+	}
+	parts := strings.Split(storedHash, ":")
+	if len(parts) != 2 {
+		return subtle.ConstantTimeCompare([]byte(password), []byte(storedHash)) == 1
+	}
+	salt, err1 := hex.DecodeString(parts[0])
+	expected, err2 := hex.DecodeString(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	h := hmac.New(sha256.New, salt)
+	h.Write([]byte(password))
+	computed := h.Sum(nil)
+	return subtle.ConstantTimeCompare(computed, expected) == 1
+}
+
+// sanitizeSubaccount removes sensitive credential fields before sending to client
+func sanitizeSubaccount(sub models.Subaccount) models.Subaccount {
+	sub.Password = ""
+	sub.PasswordHash = ""
+	return sub
+}
+
+// GetSubaccounts returns all registered enterprise sub-accounts with credentials sanitized
 func (s *Store) GetSubaccounts() []models.Subaccount {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	res := make([]models.Subaccount, 0, len(s.subaccounts))
 	for _, sub := range s.subaccounts {
-		res = append(res, sub)
+		res = append(res, sanitizeSubaccount(sub))
 	}
 	sort.Slice(res, func(i, j int) bool {
 		return res[i].CreatedAt.After(res[j].CreatedAt)
@@ -3620,7 +3774,7 @@ func (s *Store) GetSubaccounts() []models.Subaccount {
 	return res
 }
 
-// GetSubaccount retrieves a sub-account by ID
+// GetSubaccount retrieves a sub-account by ID with credentials sanitized
 func (s *Store) GetSubaccount(id string) (*models.Subaccount, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -3629,10 +3783,36 @@ func (s *Store) GetSubaccount(id string) (*models.Subaccount, error) {
 	if !exists {
 		return nil, fmt.Errorf("sub-account not found")
 	}
-	return &sub, nil
+	sanitized := sanitizeSubaccount(sub)
+	return &sanitized, nil
 }
 
-// AddSubaccount creates a new tenant sub-account
+// VerifyTenantLogin checks tenant email/username and password credentials
+func (s *Store) VerifyTenantLogin(username, password string) (*models.Subaccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cleanUser := strings.TrimSpace(strings.ToLower(username))
+	for _, sub := range s.subaccounts {
+		subEmail := strings.TrimSpace(strings.ToLower(sub.Email))
+		subName := strings.TrimSpace(strings.ToLower(sub.Name))
+		subID := strings.TrimSpace(strings.ToLower(sub.ID))
+
+		if subEmail == cleanUser || subName == cleanUser || subID == cleanUser {
+			if sub.Status != "active" {
+				return nil, fmt.Errorf("tenant account is currently %s", sub.Status)
+			}
+			if !VerifyPassword(password, sub.PasswordHash) {
+				return nil, fmt.Errorf("invalid tenant password")
+			}
+			sanitized := sanitizeSubaccount(sub)
+			return &sanitized, nil
+		}
+	}
+	return nil, fmt.Errorf("tenant not found")
+}
+
+// AddSubaccount creates a new tenant sub-account with secure password hashing
 func (s *Store) AddSubaccount(sub models.Subaccount) (*models.Subaccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3643,6 +3823,32 @@ func (s *Store) AddSubaccount(sub models.Subaccount) (*models.Subaccount, error)
 	if sub.ID == "" {
 		sub.ID = fmt.Sprintf("sub-%d", time.Now().UnixNano())
 	}
+	if strings.TrimSpace(sub.Email) == "" {
+		cleanName := strings.ToLower(regexp.MustCompile(`[^a-zA-Z0-9]+`).ReplaceAllString(sub.Name, "-"))
+		cleanName = strings.Trim(cleanName, "-")
+		if cleanName == "" {
+			cleanName = sub.ID
+		}
+		sub.Email = cleanName + "@zekea.me"
+	} else {
+		sub.Email = strings.TrimSpace(strings.ToLower(sub.Email))
+	}
+
+	// Check for unique email across existing subaccounts
+	for _, existing := range s.subaccounts {
+		if strings.EqualFold(existing.Email, sub.Email) {
+			return nil, fmt.Errorf("a tenant with email %q already exists", sub.Email)
+		}
+	}
+
+	if sub.Password != "" {
+		sub.PasswordHash = HashPassword(sub.Password)
+	} else {
+		// Default secure password if none provided
+		sub.PasswordHash = HashPassword("kumo@" + sub.ID)
+	}
+	sub.Password = "" // Never retain raw plaintext in store struct
+
 	if sub.Status == "" {
 		sub.Status = "active"
 	}
@@ -3659,10 +3865,11 @@ func (s *Store) AddSubaccount(sub models.Subaccount) (*models.Subaccount, error)
 
 	s.subaccounts[sub.ID] = sub
 	s.saveLocked()
-	return &sub, nil
+	sanitized := sanitizeSubaccount(sub)
+	return &sanitized, nil
 }
 
-// UpdateSubaccount updates an existing sub-account's configuration and quotas
+// UpdateSubaccount updates an existing sub-account's configuration, quotas, and optional password
 func (s *Store) UpdateSubaccount(sub models.Subaccount) (*models.Subaccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3674,6 +3881,12 @@ func (s *Store) UpdateSubaccount(sub models.Subaccount) (*models.Subaccount, err
 
 	if strings.TrimSpace(sub.Name) != "" {
 		existing.Name = sub.Name
+	}
+	if strings.TrimSpace(sub.Email) != "" {
+		existing.Email = strings.TrimSpace(strings.ToLower(sub.Email))
+	}
+	if strings.TrimSpace(sub.Password) != "" {
+		existing.PasswordHash = HashPassword(sub.Password)
 	}
 	if sub.Status != "" {
 		existing.Status = sub.Status
@@ -3693,7 +3906,8 @@ func (s *Store) UpdateSubaccount(sub models.Subaccount) (*models.Subaccount, err
 
 	s.subaccounts[sub.ID] = existing
 	s.saveLocked()
-	return &existing, nil
+	sanitized := sanitizeSubaccount(existing)
+	return &sanitized, nil
 }
 
 // DeleteSubaccount removes a sub-account and revokes its associated API keys

@@ -31,6 +31,7 @@ type Domain struct {
 	AssignedPoolID string    `json:"assigned_pool_id"`
 	DKIMSelector   string    `json:"dkim_selector"`
 	DKIMPublicKey  string    `json:"dkim_public_key"`
+	DKIMPrivateKey string    `json:"dkim_private_key,omitempty"`
 	SPFRecord      string    `json:"spf_record,omitempty"`
 	DMARCRecord    string    `json:"dmarc_record,omitempty"`
 	MXRecord       string    `json:"mx_record,omitempty"`
@@ -524,6 +525,9 @@ type InboundStats struct {
 type Subaccount struct {
 	ID             string    `json:"id"`
 	Name           string    `json:"name"`
+	Email          string    `json:"email"`
+	PasswordHash   string    `json:"password_hash,omitempty"`
+	Password       string    `json:"password,omitempty"` // Plaintext on create/update, never returned in list
 	Status         string    `json:"status"`          // "active", "suspended", "disabled"
 	DedicatedPool  string    `json:"dedicated_pool"`  // Egress pool ID or "default"
 	AllowedDomains []string  `json:"allowed_domains"` // Empty means any verified domain
@@ -533,6 +537,36 @@ type Subaccount struct {
 	SentTotal      int       `json:"sent_total"`
 	LastSentAt     time.Time `json:"last_sent_at,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+// AuthLoginRequest represents incoming credentials to the GNOME GDM login panel
+type AuthLoginRequest struct {
+	Username string `json:"username"` // "zekea.me" or tenant email
+	Password string `json:"password"` // "zekea@mta#kumo" or tenant password
+}
+
+// AuthUser represents an authenticated session user (Master Admin or Tenant)
+type AuthUser struct {
+	Role             string   `json:"role"` // "master_admin" or "tenant"
+	Username         string   `json:"username"`
+	Name             string   `json:"name"`
+	TenantID         string   `json:"tenant_id,omitempty"`
+	DedicatedPool    string   `json:"dedicated_pool,omitempty"`
+	AllowedDomains   []string `json:"allowed_domains,omitempty"`
+	CanManageTenants bool     `json:"can_manage_tenants"`
+	ExpiresAt        int64    `json:"exp"`
+}
+
+// AuthResponse represents the successful login response
+type AuthResponse struct {
+	Token            string   `json:"token"`
+	Role             string   `json:"role"`
+	Username         string   `json:"username"`
+	Name             string   `json:"name"`
+	TenantID         string   `json:"tenant_id,omitempty"`
+	DedicatedPool    string   `json:"dedicated_pool,omitempty"`
+	AllowedDomains   []string `json:"allowed_domains,omitempty"`
+	CanManageTenants bool     `json:"can_manage_tenants"`
 }
 
 // APIKey represents a scoped credential for API injection and management

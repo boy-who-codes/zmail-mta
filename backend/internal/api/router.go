@@ -63,6 +63,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/v1/domains/verify", s.handleVerifyDomain)
 	s.mux.HandleFunc("POST /api/v1/domains/cloudflare/sync", s.handleCloudflareSync)
 	s.mux.HandleFunc("POST /api/v1/dkim/generate", s.handleGenerateDKIM)
+	s.mux.HandleFunc("GET /api/v1/dkim/key", s.handleGetDKIMKey)
 	s.mux.HandleFunc("GET /api/v1/infra/detection", s.handleGetInfrastructureDetection)
 	s.mux.HandleFunc("POST /api/v1/infra/detect-now", s.handleForceInfrastructureDetection)
 	s.mux.HandleFunc("GET /api/v1/ippools", s.handleGetIPPools)
@@ -81,6 +82,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/shaping", s.handleDeleteRateLimit)
 	s.mux.HandleFunc("GET /api/v1/queues", s.handleGetQueues)
 	s.mux.HandleFunc("POST /api/v1/queues/action", s.handleQueueAction)
+	s.mux.HandleFunc("GET /api/v1/kumo/admin/queues", s.handleGetKumoLiveQueues)
+	s.mux.HandleFunc("GET /api/v1/kumo/admin/suspensions", s.handleGetKumoSuspensions)
+	s.mux.HandleFunc("GET /api/v1/kumo/admin/bounces", s.handleGetKumoBounces)
+	s.mux.HandleFunc("POST /api/v1/kumo/admin/suspend", s.handleSuspendKumoDomain)
+	s.mux.HandleFunc("POST /api/v1/kumo/admin/resume", s.handleResumeKumoDomain)
+	s.mux.HandleFunc("POST /api/v1/kumo/admin/bounce", s.handleBounceKumoDomain)
 	s.mux.HandleFunc("POST /api/v1/inject", s.handleInjectMessage)
 	s.mux.HandleFunc("GET /api/v1/messages", s.handleGetMessages)
 	s.mux.HandleFunc("DELETE /api/v1/messages", s.handleDeleteMessages)
@@ -194,6 +201,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/v1/inbound/routes", s.handleUpdateInboundRoute)
 	s.mux.HandleFunc("DELETE /api/v1/inbound/routes", s.handleDeleteInboundRoute)
 	s.mux.HandleFunc("GET /api/v1/inbound/stats", s.handleGetInboundStats)
+
+	// Authentication & GNOME GDM Login Panel
+	s.mux.HandleFunc("POST /api/v1/auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("GET /api/v1/auth/me", s.handleAuthMe)
 
 	// Sub-account & Multi-Tenant RBAC Endpoints (Phase 6)
 	s.mux.HandleFunc("GET /api/v1/subaccounts", s.handleGetSubaccounts)
@@ -378,8 +389,25 @@ func (s *Server) handleGenerateDKIM(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "failed to generate DKIM key"}`, http.StatusInternalServerError)
 		return
 	}
-	s.store.UpdateDomainDKIM(body.Domain, body.Selector, keypair.PublicKeyTXT)
+	s.store.UpdateDomainDKIM(body.Domain, body.Selector, keypair.PublicKeyTXT, keypair.PrivateKeyPEM)
 	json.NewEncoder(w).Encode(keypair)
+}
+
+func (s *Server) handleGetDKIMKey(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	if domain == "" {
+		http.Error(w, `{"error": "domain is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	kp, found := s.store.GetDomainDKIMKey(domain)
+	if !found || kp == nil {
+		http.Error(w, fmt.Sprintf(`{"error": "domain %s not configured for DKIM"}`, domain), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(kp)
 }
 
 func (s *Server) handleGetIPPools(w http.ResponseWriter, r *http.Request) {
@@ -943,7 +971,7 @@ func (s *Server) handleCloudflareSync(w http.ResponseWriter, r *http.Request) {
 	if dom.DKIMPublicKey == "" {
 		kp, err := dkim.GenerateRSAKeyPair(selector, cleanDomain)
 		if err == nil && kp != nil {
-			s.store.UpdateDomainDKIM(cleanDomain, selector, kp.PublicKeyTXT)
+			s.store.UpdateDomainDKIM(cleanDomain, selector, kp.PublicKeyTXT, kp.PrivateKeyPEM)
 			dom.DKIMPublicKey = kp.PublicKeyTXT
 		}
 	}
@@ -1773,6 +1801,13 @@ func (s *Server) handleGetSubaccountDetail(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleAddSubaccount(w http.ResponseWriter, r *http.Request) {
+	// Restrict tenant creation exclusively to Master Admin (zekea.me)
+	user, err := s.authenticateRequest(r)
+	if err != nil || user.Role != "master_admin" {
+		http.Error(w, `{"error": "Forbidden: Only Master Administrator (zekea.me) has authority to create tenant accounts"}`, http.StatusForbidden)
+		return
+	}
+
 	var sub models.Subaccount
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
 		http.Error(w, `{"error": "invalid json payload"}`, http.StatusBadRequest)
@@ -1787,6 +1822,12 @@ func (s *Server) handleAddSubaccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateSubaccount(w http.ResponseWriter, r *http.Request) {
+	user, err := s.authenticateRequest(r)
+	if err != nil || user.Role != "master_admin" {
+		http.Error(w, `{"error": "Forbidden: Only Master Administrator (zekea.me) can modify tenant configurations"}`, http.StatusForbidden)
+		return
+	}
+
 	var sub models.Subaccount
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
 		http.Error(w, `{"error": "invalid json payload"}`, http.StatusBadRequest)
@@ -1801,6 +1842,13 @@ func (s *Server) handleUpdateSubaccount(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteSubaccount(w http.ResponseWriter, r *http.Request) {
+	// Restrict tenant deletion exclusively to Master Admin (zekea.me)
+	user, err := s.authenticateRequest(r)
+	if err != nil || user.Role != "master_admin" {
+		http.Error(w, `{"error": "Forbidden: Only Master Administrator (zekea.me) can delete tenant accounts"}`, http.StatusForbidden)
+		return
+	}
+
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		var body struct {

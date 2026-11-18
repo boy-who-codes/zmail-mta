@@ -14,6 +14,8 @@ import {
   RenderTemplateRequest,
   RenderTemplateResponse,
   DeliverabilityHealthReport,
+  AuthUser,
+  AuthResponse,
 } from "../types/os";
 
 const getApiBase = (): string => {
@@ -876,16 +878,76 @@ export async function fetchInboundStats(): Promise<InboundStats> {
   return res.json();
 }
 
+// --- AUTHENTICATION & GNOME GDM SESSION API ---
+
+export function getAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("mailops_auth_session");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return parsed.token || null;
+    }
+  } catch {}
+  return null;
+}
+
+export function getAuthHeaders(): HeadersInit {
+  const token = getAuthToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+export async function loginUser(username: string, password: string): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: username.trim(), password }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Authentication failure: Invalid credentials");
+  }
+  const data: AuthResponse = await res.json();
+  if (typeof window !== "undefined") {
+    localStorage.setItem("mailops_auth_session", JSON.stringify(data));
+  }
+  return data;
+}
+
+export async function getAuthMe(): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/api/v1/auth/me`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error("Session expired or invalid");
+  }
+  return res.json();
+}
+
+export function clearAuthSession(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("mailops_auth_session");
+  }
+}
+
 // --- PHASE 6: SUB-ACCOUNT & MULTI-TENANT RBAC API ---
 
 export async function fetchSubaccounts(): Promise<Subaccount[]> {
-  const res = await fetch(`${API_BASE}/api/v1/subaccounts`);
+  const res = await fetch(`${API_BASE}/api/v1/subaccounts`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch sub-accounts");
   return res.json();
 }
 
 export async function fetchSubaccountDetail(id: string): Promise<Subaccount> {
-  const res = await fetch(`${API_BASE}/api/v1/subaccounts/detail?id=${encodeURIComponent(id)}`);
+  const res = await fetch(`${API_BASE}/api/v1/subaccounts/detail?id=${encodeURIComponent(id)}`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch sub-account detail");
   return res.json();
 }
@@ -893,7 +955,7 @@ export async function fetchSubaccountDetail(id: string): Promise<Subaccount> {
 export async function addSubaccount(sub: Partial<Subaccount>): Promise<Subaccount> {
   const res = await fetch(`${API_BASE}/api/v1/subaccounts`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify(sub),
   });
   if (!res.ok) {
@@ -906,7 +968,7 @@ export async function addSubaccount(sub: Partial<Subaccount>): Promise<Subaccoun
 export async function updateSubaccount(sub: Partial<Subaccount>): Promise<Subaccount> {
   const res = await fetch(`${API_BASE}/api/v1/subaccounts`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify(sub),
   });
   if (!res.ok) {
@@ -919,8 +981,12 @@ export async function updateSubaccount(sub: Partial<Subaccount>): Promise<Subacc
 export async function deleteSubaccount(id: string) {
   const res = await fetch(`${API_BASE}/api/v1/subaccounts?id=${encodeURIComponent(id)}`, {
     method: "DELETE",
+    headers: getAuthHeaders(),
   });
-  if (!res.ok) throw new Error("Failed to delete sub-account");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to delete sub-account");
+  }
   return res.json();
 }
 
@@ -1699,6 +1765,82 @@ export async function checkRBLTarget(target: string, type?: "ip" | "domain"): Pr
 export async function fetchRBLSummary(): Promise<RBLAuditSummary> {
   const res = await fetch(`${API_BASE}/api/v1/dns/rbl/summary`);
   if (!res.ok) throw new Error("Failed to fetch RBL system summary");
+  return res.json();
+}
+
+// ==========================================
+// KumoMTA Live Admin & Queue Management API
+// ==========================================
+
+export interface KumoLiveQueue {
+  queue_name: string;
+  domain: string;
+  count: number;
+}
+
+export interface KumoSuspendRule {
+  id: string;
+  campaign?: string;
+  tenant?: string;
+  domain: string;
+  reason: string;
+  duration: string;
+}
+
+export interface KumoBounceRule {
+  id: string;
+  campaign?: string;
+  tenant?: string;
+  domain: string;
+  reason: string;
+  duration: string;
+}
+
+export async function fetchKumoLiveQueues(): Promise<KumoLiveQueue[]> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/queues`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchKumoSuspensions(): Promise<KumoSuspendRule[]> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/suspensions`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchKumoBounces(): Promise<KumoBounceRule[]> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/bounces`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function suspendKumoQueue(domain: string, reason?: string, duration?: string): Promise<KumoSuspendRule> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/suspend`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain, reason, duration }),
+  });
+  if (!res.ok) throw new Error("Failed to suspend queue in KumoMTA");
+  return res.json();
+}
+
+export async function resumeKumoQueue(domain: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain }),
+  });
+  if (!res.ok) throw new Error("Failed to resume queue in KumoMTA");
+  return res.json();
+}
+
+export async function bounceKumoQueue(domain: string, reason?: string, duration?: string): Promise<KumoBounceRule> {
+  const res = await fetch(`${API_BASE}/api/v1/kumo/admin/bounce`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain, reason, duration }),
+  });
+  if (!res.ok) throw new Error("Failed to bounce queue in KumoMTA");
   return res.json();
 }
 

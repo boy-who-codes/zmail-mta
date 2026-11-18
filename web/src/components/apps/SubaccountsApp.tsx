@@ -39,8 +39,12 @@ import {
   fetchDomains,
 } from "../../lib/api";
 import { Subaccount, APIKey, SubaccountStats } from "../../types/os";
+import { useWindowManager } from "../../context/WindowManagerContext";
 
 export const SubaccountsApp: React.FC = () => {
+  const { currentUser } = useWindowManager();
+  const isMasterAdmin = currentUser?.role === "master_admin" || currentUser?.can_manage_tenants;
+
   const [activeTab, setActiveTab] = useState<"tenants" | "keys" | "integration">("tenants");
   const [subaccounts, setSubaccounts] = useState<Subaccount[]>([]);
   const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
@@ -59,10 +63,21 @@ export const SubaccountsApp: React.FC = () => {
   // Create Subaccount Modal State
   const [showSubModal, setShowSubModal] = useState(false);
   const [subName, setSubName] = useState("");
+  const [subEmail, setSubEmail] = useState("");
+  const [subPassword, setSubPassword] = useState("");
   const [subPool, setSubPool] = useState("default");
   const [subDailyQuota, setSubDailyQuota] = useState(50000);
   const [subAllowedDomains, setSubAllowedDomains] = useState<string>("");
   const [creatingSub, setCreatingSub] = useState(false);
+
+  const handleGenerateRandomPassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
+    let pass = "";
+    for (let i = 0; i < 16; i++) {
+      pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setSubPassword(pass);
+  };
 
   // Create API Key Modal State
   const [showKeyModal, setShowKeyModal] = useState(false);
@@ -128,7 +143,9 @@ export const SubaccountsApp: React.FC = () => {
         .filter((d) => d.length > 0);
 
       await addSubaccount({
-        name: subName,
+        name: subName.trim(),
+        email: subEmail.trim(),
+        password: subPassword,
         dedicated_pool: subPool,
         daily_quota: Number(subDailyQuota),
         hourly_quota: Math.floor(Number(subDailyQuota) / 10),
@@ -138,6 +155,8 @@ export const SubaccountsApp: React.FC = () => {
 
       setShowSubModal(false);
       setSubName("");
+      setSubEmail("");
+      setSubPassword("");
       setSubAllowedDomains("");
       loadData();
     } catch (err: any) {
@@ -264,13 +283,24 @@ export const SubaccountsApp: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setShowSubModal(true)}
-              className="px-3 py-1.5 bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-sm shadow-[#ff69b4]/20"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              New Sub-Account
-            </button>
+            {isMasterAdmin ? (
+              <button
+                onClick={() => setShowSubModal(true)}
+                className="px-3 py-1.5 bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-sm shadow-[#ff69b4]/20"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                New Sub-Account
+              </button>
+            ) : (
+              <button
+                disabled
+                title="Only Master Administrator (zekea.me) can create new tenant accounts"
+                className="px-3 py-1.5 bg-slate-800 text-slate-500 border border-slate-700/60 font-medium text-xs rounded-lg cursor-not-allowed flex items-center gap-1.5 opacity-60"
+              >
+                <Lock className="w-3.5 h-3.5 text-slate-500" />
+                New Sub-Account (Master Only)
+              </button>
+            )}
             <button
               onClick={() => setShowKeyModal(true)}
               className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-xs rounded-lg transition-all flex items-center gap-1.5"
@@ -373,6 +403,19 @@ export const SubaccountsApp: React.FC = () => {
         {/* ============================================================== */}
         {activeTab === "tenants" && (
           <div className="space-y-4">
+            {/* Restricted notice for non-master accounts */}
+            {!isMasterAdmin && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-center gap-3">
+                <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                <div>
+                  <span className="font-semibold text-amber-300">Tenant View: </span>
+                  <span>
+                    You are signed in as a Tenant ({currentUser?.name || currentUser?.username}). Provisioning new sub-accounts and modifying sending pools is restricted exclusively to the Master Administrator (zekea.me).
+                  </span>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="relative flex-1 max-w-sm">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -397,13 +440,15 @@ export const SubaccountsApp: React.FC = () => {
                 <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
                   Create isolated sub-accounts to allocate sending quotas, enforce dedicated IP pool routing, and restrict sending domains per customer.
                 </p>
-                <button
-                  onClick={() => setShowSubModal(true)}
-                  className="mt-4 px-3.5 py-1.5 bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold text-xs rounded-lg transition-all inline-flex items-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Create First Sub-Account
-                </button>
+                {isMasterAdmin && (
+                  <button
+                    onClick={() => setShowSubModal(true)}
+                    className="mt-4 px-3.5 py-1.5 bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold text-xs rounded-lg transition-all inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Create First Sub-Account
+                  </button>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -420,7 +465,11 @@ export const SubaccountsApp: React.FC = () => {
                             <div className="text-sm font-semibold text-white flex items-center gap-2">
                               {sub.name}
                             </div>
-                            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                            <div className="text-[11px] text-[#ff69b4] font-mono mt-0.5 flex items-center gap-1">
+                              <Building2 className="w-3 h-3" />
+                              <span>{sub.email || `${sub.id}@zekea.me`}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-mono">
                               ID: {sub.id}
                             </div>
                           </div>
@@ -754,6 +803,51 @@ print(resp.json())`}
                   onChange={(e) => setSubName(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-[#ff69b4]/60"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-slate-950/60 border border-slate-800 rounded-lg">
+                <div>
+                  <label className="text-xs font-medium text-slate-300 block mb-1">
+                    Tenant Login Email
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. client@acme.com"
+                    value={subEmail}
+                    onChange={(e) => setSubEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-[#ff69b4]/60 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Identifier for GNOME login panel.
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-slate-300">
+                      Tenant Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleGenerateRandomPassword}
+                      className="text-[10px] text-[#ff69b4] hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <Zap className="w-2.5 h-2.5" /> Auto-Gen
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Tenant password"
+                    value={subPassword}
+                    onChange={(e) => setSubPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-[#ff69b4]/60 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Password to authenticate tenant.
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

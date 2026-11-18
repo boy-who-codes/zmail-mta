@@ -29,6 +29,11 @@ import {
   RotateCw,
   Sliders,
   ExternalLink,
+  Shield,
+  Building2,
+  Lock,
+  LogOut,
+  User,
 } from "lucide-react";
 
 export const TopMenuBar: React.FC = () => {
@@ -39,11 +44,15 @@ export const TopMenuBar: React.FC = () => {
     toggleNotificationCenter,
     toggleCommandPalette,
     openApp,
+    currentUser,
+    lockScreen,
+    logout,
   } = useWindowManager();
 
   const [timeStr, setTimeStr] = useState<string>("");
   const [dateStr, setDateStr] = useState<string>("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
   useEffect(() => {
     const updateTime = () => {
@@ -663,6 +672,64 @@ export const TopMenuBar: React.FC = () => {
             <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-[#ff69b4]" />
           )}
         </button>
+
+        {/* User Account / GDM Lock Screen Trigger */}
+        <div className="relative">
+          <button
+            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#14151a] hover:bg-[#1f2028] border border-[#23252e] text-xs transition-all cursor-pointer"
+            title="User Account & Security"
+          >
+            {currentUser?.role === "master_admin" ? (
+              <>
+                <div className="w-2 h-2 rounded-full bg-[#ff69b4]" />
+                <span className="font-medium text-[#f7f8f8]">zekea.me</span>
+                <span className="text-[10px] text-[#ff69b4] bg-[#ff69b4]/10 px-1 rounded font-mono">Master</span>
+              </>
+            ) : (
+              <>
+                <Building2 className="w-3.5 h-3.5 text-[#3b9eff]" />
+                <span className="font-medium text-[#f7f8f8] max-w-[90px] truncate">
+                  {currentUser?.name || "Tenant"}
+                </span>
+                <span className="text-[10px] text-[#3b9eff] bg-[#3b9eff]/10 px-1 rounded font-mono">Tenant</span>
+              </>
+            )}
+          </button>
+
+          {isUserMenuOpen && (
+            <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl bg-[#0f1014] border border-[#23252e] shadow-2xl p-1.5 z-50 text-xs">
+              <div className="px-3 py-2 border-b border-white/5 mb-1">
+                <div className="font-semibold text-[#f7f8f8]">
+                  {currentUser?.name || "Master Administrator"}
+                </div>
+                <div className="text-[11px] text-[#8a8f98] font-mono truncate">
+                  {currentUser?.username || "zekea.me"}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsUserMenuOpen(false);
+                  lockScreen();
+                }}
+                className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-white/5 text-[#d0d6e0] hover:text-white flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Lock className="w-3.5 h-3.5 text-[#ff69b4]" />
+                <span>Lock Screen (GDM)</span>
+              </button>
+              <button
+                onClick={() => {
+                  setIsUserMenuOpen(false);
+                  logout();
+                }}
+                className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#ff2047]/10 text-[#8a8f98] hover:text-[#ff2047] flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out</span>
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Date and Clock */}
         <div className="flex items-center gap-2 pl-1 font-medium text-[11px] text-[#f7f8f8]">

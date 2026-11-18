@@ -50,6 +50,45 @@ end)
 -- Multi-IP Egress Pools Configuration (Phase 1)
 sources:setup { '/opt/kumomta/etc/policy/sources.toml' }
 
+-- Phase 4: Native Wire-Speed Cryptographic DKIM Signing (RFC 6376)
+local function get_dkim_signer_for_domain(domain)
+  if not domain or domain == '' then
+    return nil
+  end
+
+  local ok, res = pcall(function()
+    local client = kumo.http.build_client({})
+    local req = client:get('http://mailops-backend:8080/api/v1/dkim/key?domain=' .. domain)
+    return req:send()
+  end)
+
+  if ok and res and res:status_code() == 200 then
+    local parse_ok, dkim_info = pcall(kumo.serde.json_parse, res:text())
+    if parse_ok and dkim_info and dkim_info.private_key_pem and dkim_info.selector then
+      local signer_ok, signer = pcall(function()
+        return kumo.dkim.rsa_sha256_signer {
+          domain = domain,
+          selector = dkim_info.selector,
+          headers = { 'From', 'To', 'Subject', 'Date', 'Message-ID', 'MIME-Version', 'Content-Type' },
+          key = {
+            key_data = dkim_info.private_key_pem,
+          },
+        }
+      end)
+      if signer_ok and signer then
+        return signer
+      end
+    end
+  end
+  return nil
+end
+
+local memoized_dkim_signer = kumo.memoize(get_dkim_signer_for_domain, {
+  name = 'mailops_memoized_dkim_signer',
+  ttl = '10 minutes',
+  capacity = 128,
+})
+
 -- Traffic Shaping configuration
 local shaper = shaping:setup_with_automation {
   publish = { 'http://kumo-tsa:8008' },
@@ -206,6 +245,27 @@ kumo.on('smtp_server_message_received', function(msg)
       ['.mail.protection.outlook.com.'] = 'outlook.com',
       ['.icloud.com.'] = 'icloud.com',
     })
+  end)
+
+  -- Phase 4: Native RFC 6376 DKIM Cryptographic Signing
+  pcall(function()
+    local from_hdr = msg:from_header()
+    local sender_domain = nil
+    if from_hdr and from_hdr.domain then
+      sender_domain = from_hdr.domain
+    else
+      local _, at_pos = string.find(sender, '@')
+      if at_pos then
+        sender_domain = string.sub(sender, at_pos + 1):gsub('>$', '')
+      end
+    end
+
+    if sender_domain and sender_domain ~= '' then
+      local signer = memoized_dkim_signer(sender_domain)
+      if signer then
+        msg:dkim_sign(signer)
+      end
+    end
   end)
 
   local subject = msg:get_first_named_header_value('Subject') or 'Operational Delivery Message'

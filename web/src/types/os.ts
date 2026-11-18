@@ -189,6 +189,8 @@ export interface ClusterStatus {
 export interface Subaccount {
   id: string;
   name: string;
+  email?: string;
+  password?: string;
   status: "active" | "suspended" | "disabled";
   dedicated_pool: string;
   allowed_domains: string[];
@@ -198,6 +200,20 @@ export interface Subaccount {
   sent_total: number;
   last_sent_at?: string;
   created_at: string;
+}
+
+export interface AuthUser {
+  role: "master_admin" | "tenant";
+  username: string;
+  name: string;
+  tenant_id?: string;
+  dedicated_pool?: string;
+  allowed_domains?: string[];
+  can_manage_tenants: boolean;
+}
+
+export interface AuthResponse extends AuthUser {
+  token: string;
 }
 
 export interface APIKey {
