@@ -64,6 +64,90 @@
   ],
   "messages": [
     {
+      "id": "e83cd4dbe43a11f19cc9d6879d25bd97",
+      "recipient": "admin@acme-corp.com",
+      "sender": "sender@acme-corp.com",
+      "subject": "Local Reception Test",
+      "domain": "acme-corp.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T17:01:49.295680348Z",
+      "created_at": "2026-11-19T17:01:49.295680517Z",
+      "response": "250 2.0.0 OK (Accepted by KumoMTA, Egress Pool: default)",
+      "pool": "default"
+    },
+    {
+      "id": "21de3031",
+      "recipient": "admin@acme-corp.com",
+      "sender": "sender@acme-corp.com",
+      "subject": "Local Reception Test",
+      "domain": "acme-corp.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T17:01:48.064417986Z",
+      "created_at": "2026-11-19T17:01:48.064418124Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "e13b6dc0e43a11f19cbdd6879d25bd97",
+      "recipient": "test@example.com",
+      "sender": "alice@acme-corp.com",
+      "subject": "DKIM Verification Test",
+      "domain": "example.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T17:01:36.574316513Z",
+      "created_at": "2026-11-19T17:01:36.574316637Z",
+      "response": "250 2.0.0 OK (Accepted by KumoMTA, Egress Pool: default)",
+      "pool": "default"
+    },
+    {
+      "id": "3680814b",
+      "recipient": "test@example.com",
+      "sender": "alice@acme-corp.com",
+      "subject": "DKIM Verification Test",
+      "domain": "example.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T17:01:36.281599582Z",
+      "created_at": "2026-11-19T17:01:36.281599727Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
+      "id": "57a96139e43a11f19ff74ada31305b02",
+      "recipient": "test@example.com",
+      "sender": "alice@acme-corp.com",
+      "subject": "DKIM Verification Test",
+      "domain": "example.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T16:57:45.770098391Z",
+      "created_at": "2026-11-19T16:57:45.770098514Z",
+      "response": "250 2.0.0 OK (Accepted by KumoMTA, Egress Pool: default)",
+      "pool": "default"
+    },
+    {
+      "id": "be4cd563",
+      "recipient": "test@example.com",
+      "sender": "alice@acme-corp.com",
+      "subject": "DKIM Verification Test",
+      "domain": "example.com",
+      "egress_ip": "172.18.0.6",
+      "status": "waiting_to_send",
+      "attempts": 1,
+      "last_attempt": "2026-11-19T16:57:45.47640891Z",
+      "created_at": "2026-11-19T16:57:45.476409066Z",
+      "response": "250 2.0.0 OK (Queued for Pool default)",
+      "pool": "default"
+    },
+    {
       "id": "7caa09dce43711f1a43b827db67cea4b",
       "recipient": "test@destination.com",
       "sender": "canary-probe@acme-corp.com",
@@ -2199,20 +2283,6 @@
   ],
   "rate_limits": [
     {
-      "domain": "default",
-      "connection_limit": 10,
-      "max_connection_rate": "100/min",
-      "max_deliveries_per_connection": 100,
-      "max_message_rate": "100/s"
-    },
-    {
-      "domain": "gmail.com",
-      "connection_limit": 20,
-      "max_connection_rate": "50/s",
-      "max_deliveries_per_connection": 100,
-      "max_message_rate": "50/s"
-    },
-    {
       "domain": "yahoo.com",
       "connection_limit": 15,
       "max_connection_rate": "30/s",
@@ -2232,6 +2302,20 @@
       "max_connection_rate": "25/s",
       "max_deliveries_per_connection": 50,
       "max_message_rate": "25/s"
+    },
+    {
+      "domain": "default",
+      "connection_limit": 10,
+      "max_connection_rate": "100/min",
+      "max_deliveries_per_connection": 100,
+      "max_message_rate": "100/s"
+    },
+    {
+      "domain": "gmail.com",
+      "connection_limit": 20,
+      "max_connection_rate": "50/s",
+      "max_deliveries_per_connection": 100,
+      "max_message_rate": "50/s"
     }
   ],
   "whitelist": [
@@ -3315,6 +3399,79 @@
       "is_arf": false,
       "webhook_status": "none",
       "received_at": "2026-11-19T16:37:19Z"
+    },
+    {
+      "id": "57a96139e43a11f19ff74ada31305b02",
+      "sender": "alice@acme-corp.com",
+      "recipient": "test@example.com",
+      "subject": "DKIM Verification Test",
+      "body_text": "Received: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id 57a96139e43a11f19ff74ada31305b02 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 16:57:45 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003cbe4cd563@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "body_html": "Received: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id 57a96139e43a11f19ff74ada31305b02 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 16:57:45 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003cbe4cd563@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "raw_headers": {
+        "content-type": "text/plain; charset=utf-8",
+        "from": "alice@acme-corp.com",
+        "subject": "DKIM Verification Test",
+        "to": "test@example.com"
+      },
+      "raw_mime": "Received: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id 57a96139e43a11f19ff74ada31305b02 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 16:57:45 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003cbe4cd563@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "spf_status": "pass",
+      "dkim_status": "pass",
+      "is_arf": false,
+      "webhook_status": "none",
+      "received_at": "2026-11-19T16:57:45Z"
+    },
+    {
+      "id": "e13b6dc0e43a11f19cbdd6879d25bd97",
+      "sender": "alice@acme-corp.com",
+      "recipient": "test@example.com",
+      "subject": "DKIM Verification Test",
+      "body_text": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=BHdeuhWXuMi9lbn3ozOS8UZkyXaHq2q1sybTzde80f8=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107696;\r\n\tb=TVswYdxOknrn8tWLWbulRWhcIJ2bj+CEudGQswBHZlsiPLIdzydx5sgY8xQt5bfdXkSYI5OFH\r\n\t4GXR3kfRe72BB0o8fvQNtssLN8oqDB48jFq4GTC8pIUMmPVoi5zz6W1JIU/PlWLn04tLesqe5/4\r\n\tB8iBsPY21tE+vrCwbXa22O3av+/KPqwEY36ytuZixAa29mE5dgTmqZPQohXvxMRxynR0uTmzUMQ\r\n\tgc+XGvdnOkwmihm1nfKQ4eD/LAvE2z4gfg+cZ0j25hXzUiqouKMa2gm4Td8spnqLdnUghxv2p9Q\r\n\tTOS5WiOtx3xFwmr2q4AAfwatb48O+rMOYjN0lZaF20Uw==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e13b6dc0e43a11f19cbdd6879d25bd97 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:36 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003c3680814b@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "body_html": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=BHdeuhWXuMi9lbn3ozOS8UZkyXaHq2q1sybTzde80f8=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107696;\r\n\tb=TVswYdxOknrn8tWLWbulRWhcIJ2bj+CEudGQswBHZlsiPLIdzydx5sgY8xQt5bfdXkSYI5OFH\r\n\t4GXR3kfRe72BB0o8fvQNtssLN8oqDB48jFq4GTC8pIUMmPVoi5zz6W1JIU/PlWLn04tLesqe5/4\r\n\tB8iBsPY21tE+vrCwbXa22O3av+/KPqwEY36ytuZixAa29mE5dgTmqZPQohXvxMRxynR0uTmzUMQ\r\n\tgc+XGvdnOkwmihm1nfKQ4eD/LAvE2z4gfg+cZ0j25hXzUiqouKMa2gm4Td8spnqLdnUghxv2p9Q\r\n\tTOS5WiOtx3xFwmr2q4AAfwatb48O+rMOYjN0lZaF20Uw==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e13b6dc0e43a11f19cbdd6879d25bd97 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:36 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003c3680814b@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "raw_headers": {
+        "content-type": "text/plain; charset=utf-8",
+        "from": "alice@acme-corp.com",
+        "subject": "DKIM Verification Test",
+        "to": "test@example.com"
+      },
+      "raw_mime": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=BHdeuhWXuMi9lbn3ozOS8UZkyXaHq2q1sybTzde80f8=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107696;\r\n\tb=TVswYdxOknrn8tWLWbulRWhcIJ2bj+CEudGQswBHZlsiPLIdzydx5sgY8xQt5bfdXkSYI5OFH\r\n\t4GXR3kfRe72BB0o8fvQNtssLN8oqDB48jFq4GTC8pIUMmPVoi5zz6W1JIU/PlWLn04tLesqe5/4\r\n\tB8iBsPY21tE+vrCwbXa22O3av+/KPqwEY36ytuZixAa29mE5dgTmqZPQohXvxMRxynR0uTmzUMQ\r\n\tgc+XGvdnOkwmihm1nfKQ4eD/LAvE2z4gfg+cZ0j25hXzUiqouKMa2gm4Td8spnqLdnUghxv2p9Q\r\n\tTOS5WiOtx3xFwmr2q4AAfwatb48O+rMOYjN0lZaF20Uw==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e13b6dc0e43a11f19cbdd6879d25bd97 for \u003ctest@example.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:36 +0000\r\nFrom: alice@acme-corp.com\r\nTo: test@example.com\r\nSubject: DKIM Verification Test\r\nX-Pool: default\r\nMessage-ID: \u003c3680814b@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDKIM Verification Test\r\n",
+      "spf_status": "pass",
+      "dkim_status": "pass",
+      "is_arf": false,
+      "webhook_status": "none",
+      "received_at": "2026-11-19T17:01:36Z"
+    },
+    {
+      "id": "loc-21de3031",
+      "sender": "sender@acme-corp.com",
+      "recipient": "admin@acme-corp.com",
+      "subject": "Local Reception Test",
+      "body_text": "",
+      "body_html": "",
+      "spf_status": "pass",
+      "dkim_status": "valid",
+      "is_arf": false,
+      "webhook_status": "none",
+      "received_at": "2026-11-19T17:01:48.064142517Z"
+    },
+    {
+      "id": "e83cd4dbe43a11f19cc9d6879d25bd97",
+      "sender": "sender@acme-corp.com",
+      "recipient": "admin@acme-corp.com",
+      "subject": "Local Reception Test",
+      "body_text": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=GZ9thllmGKSpLVh+x02xemqJARGXnZB7NrOKhLe4Ey0=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107709;\r\n\tb=EDLCmMM0PpGIoxADmsQoQ5JjIqYHP6x8+2MyayA2qcZ7GXfCmJkvF0HFM6yN4g2nhT8PwaVc4\r\n\tyU2+81FxHXnA+9aTpBI4rtK/PfS+78/Z1iQGDIcep/RwVWlROYzuPqS2/D4asSXvTLC1XOtjI76\r\n\tArAbXHKopSytKWnRCWLudCgihJ9N4Ik8LzUYXVwwuijqVY1yGzHIo+HGTEDuUJUlFf9iX4y6oBn\r\n\t1YOuKIn8HpzixBpyh2qNvp4S6/ueTq8RSJ9c6ZYd7EljH6MYYqRNQDhvQv9Qt7nQfXVsd/ELqEU\r\n\tMb/tJmX/vsYAIcFGr8CFspwlvkbtvA4Q/bCzOjJHZ4JA==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e83cd4dbe43a11f19cc9d6879d25bd97 for \u003cadmin@acme-corp.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:48 +0000\r\nFrom: sender@acme-corp.com\r\nTo: admin@acme-corp.com\r\nSubject: Local Reception Test\r\nX-Pool: default\r\nMessage-ID: \u003c21de3031@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nLocal Reception Test\r\n",
+      "body_html": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=GZ9thllmGKSpLVh+x02xemqJARGXnZB7NrOKhLe4Ey0=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107709;\r\n\tb=EDLCmMM0PpGIoxADmsQoQ5JjIqYHP6x8+2MyayA2qcZ7GXfCmJkvF0HFM6yN4g2nhT8PwaVc4\r\n\tyU2+81FxHXnA+9aTpBI4rtK/PfS+78/Z1iQGDIcep/RwVWlROYzuPqS2/D4asSXvTLC1XOtjI76\r\n\tArAbXHKopSytKWnRCWLudCgihJ9N4Ik8LzUYXVwwuijqVY1yGzHIo+HGTEDuUJUlFf9iX4y6oBn\r\n\t1YOuKIn8HpzixBpyh2qNvp4S6/ueTq8RSJ9c6ZYd7EljH6MYYqRNQDhvQv9Qt7nQfXVsd/ELqEU\r\n\tMb/tJmX/vsYAIcFGr8CFspwlvkbtvA4Q/bCzOjJHZ4JA==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e83cd4dbe43a11f19cc9d6879d25bd97 for \u003cadmin@acme-corp.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:48 +0000\r\nFrom: sender@acme-corp.com\r\nTo: admin@acme-corp.com\r\nSubject: Local Reception Test\r\nX-Pool: default\r\nMessage-ID: \u003c21de3031@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nLocal Reception Test\r\n",
+      "raw_headers": {
+        "content-type": "text/plain; charset=utf-8",
+        "from": "sender@acme-corp.com",
+        "subject": "Local Reception Test",
+        "to": "admin@acme-corp.com"
+      },
+      "raw_mime": "DKIM-Signature: v=1; a=rsa-sha256; d=acme-corp.com; s=k202611; c=relaxed/relaxed;\r\n\tbh=GZ9thllmGKSpLVh+x02xemqJARGXnZB7NrOKhLe4Ey0=;\r\n\th=from:to:subject:date:message-id:mime-version:content-type; t=1795107709;\r\n\tb=EDLCmMM0PpGIoxADmsQoQ5JjIqYHP6x8+2MyayA2qcZ7GXfCmJkvF0HFM6yN4g2nhT8PwaVc4\r\n\tyU2+81FxHXnA+9aTpBI4rtK/PfS+78/Z1iQGDIcep/RwVWlROYzuPqS2/D4asSXvTLC1XOtjI76\r\n\tArAbXHKopSytKWnRCWLudCgihJ9N4Ik8LzUYXVwwuijqVY1yGzHIo+HGTEDuUJUlFf9iX4y6oBn\r\n\t1YOuKIn8HpzixBpyh2qNvp4S6/ueTq8RSJ9c6ZYd7EljH6MYYqRNQDhvQv9Qt7nQfXVsd/ELqEU\r\n\tMb/tJmX/vsYAIcFGr8CFspwlvkbtvA4Q/bCzOjJHZ4JA==;\r\nReceived: from localhost (172.18.0.6)\r\n  by mta.mailops.local (KumoMTA 172.18.0.5) \r\n  with ESMTP id e83cd4dbe43a11f19cc9d6879d25bd97 for \u003cadmin@acme-corp.com\u003e;\r\n  Thu, 19 Nov 2026 17:01:48 +0000\r\nFrom: sender@acme-corp.com\r\nTo: admin@acme-corp.com\r\nSubject: Local Reception Test\r\nX-Pool: default\r\nMessage-ID: \u003c21de3031@mailops.local\u003e\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nLocal Reception Test\r\n",
+      "spf_status": "pass",
+      "dkim_status": "pass",
+      "is_arf": false,
+      "webhook_status": "none",
+      "received_at": "2026-11-19T17:01:49Z"
     }
   ],
   "inbound_routes": [],
@@ -3490,6 +3647,59 @@
   },
   "playbooks": [
     {
+      "id": "playbook-cold-b2b",
+      "name": "High-Deliverability Enterprise Cold Cadence",
+      "description": "3-step benchmark sequence with automatic threading, context bumps, and deliverability safeguards.",
+      "category": "b2b_sales",
+      "target_audience": "Enterprise CTOs, VPs of Eng, Technical Founders",
+      "estimated_days": 7,
+      "steps": [
+        {
+          "id": "step-1",
+          "step_number": 1,
+          "title": "Step 1: 2026 Deliverability Index",
+          "subject": "2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
+          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eWe recently analyzed post-2024 DMARC and Yahoo/Google inbox placement metrics across 40M enterprise emails. We noticed that several domains in the {{company}} sector experienced soft-deferral cascades on port 25.\u003c/p\u003e\u003cp\u003eWe put together a tailored benchmark showing the exact SPF/DKIM alignment and dedicated IP warmup curves required for 99.4% primary inbox placement.\u003c/p\u003e\u003cp\u003eWould you like me to send over the benchmark executive summary?\u003c/p\u003e\u003cp\u003eBest regards,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
+          "body_preview": "We recently analyzed post-2024 DMARC and Yahoo/Google inbox placement metrics across 40M enterprise emails...",
+          "delay_days": 0,
+          "delay_hours": 0,
+          "send_days": "business_days",
+          "trigger_condition": "immediate",
+          "is_threaded_reply": false,
+          "created_at": "2026-11-19T13:55:25.064351849Z"
+        },
+        {
+          "id": "step-2",
+          "step_number": 2,
+          "title": "Step 2: Relevant Case Study \u0026 Benchmark Bump",
+          "subject": "Re: 2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
+          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eQuick follow-up on my note from earlier this week. One of our recent fintech partners reduced spam complaint rates to \u0026lt;0.01% within 14 days by implementing automated mailbox pooling and reverse DNS verification.\u003c/p\u003e\u003cp\u003eHappy to share their anonymized audit blueprint if helpful for {{company}}.\u003c/p\u003e\u003cp\u003eBest,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
+          "body_preview": "Quick follow-up on my note from earlier this week. One of our recent fintech partners reduced spam complaints...",
+          "delay_days": 3,
+          "delay_hours": 0,
+          "send_days": "business_days",
+          "trigger_condition": "no_reply",
+          "is_threaded_reply": true,
+          "created_at": "2026-11-19T13:55:25.064351994Z"
+        },
+        {
+          "id": "step-3",
+          "step_number": 3,
+          "title": "Step 3: Polite Breakup \u0026 Permission to Close",
+          "subject": "Re: 2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
+          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eI realize you are likely heads down on critical engineering initiatives. I won't crowd your inbox any further.\u003c/p\u003e\u003cp\u003eIf email infrastructure, IP warmup, or Yahoo/Google deliverability compliance becomes a priority later this quarter, feel free to reconnect.\u003c/p\u003e\u003cp\u003eWishing you and {{company}} continued success,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
+          "body_preview": "I realize you are likely heads down on critical engineering initiatives. I won't crowd your inbox any further...",
+          "delay_days": 4,
+          "delay_hours": 0,
+          "send_days": "business_days",
+          "trigger_condition": "no_reply",
+          "is_threaded_reply": true,
+          "created_at": "2026-11-19T13:55:25.064352066Z"
+        }
+      ],
+      "created_at": "2026-11-19T13:55:25.064352138Z"
+    },
+    {
       "id": "playbook-saas-onboarding",
       "name": "SaaS Product Onboarding \u0026 Activation Cadence",
       "description": "4-step developer onboarding sequence ensuring new organizations configure SMTP, verify DKIM, and launch safely.",
@@ -3580,62 +3790,20 @@
         }
       ],
       "created_at": "2026-11-19T13:55:25.064361646Z"
-    },
-    {
-      "id": "playbook-cold-b2b",
-      "name": "High-Deliverability Enterprise Cold Cadence",
-      "description": "3-step benchmark sequence with automatic threading, context bumps, and deliverability safeguards.",
-      "category": "b2b_sales",
-      "target_audience": "Enterprise CTOs, VPs of Eng, Technical Founders",
-      "estimated_days": 7,
-      "steps": [
-        {
-          "id": "step-1",
-          "step_number": 1,
-          "title": "Step 1: 2026 Deliverability Index",
-          "subject": "2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
-          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eWe recently analyzed post-2024 DMARC and Yahoo/Google inbox placement metrics across 40M enterprise emails. We noticed that several domains in the {{company}} sector experienced soft-deferral cascades on port 25.\u003c/p\u003e\u003cp\u003eWe put together a tailored benchmark showing the exact SPF/DKIM alignment and dedicated IP warmup curves required for 99.4% primary inbox placement.\u003c/p\u003e\u003cp\u003eWould you like me to send over the benchmark executive summary?\u003c/p\u003e\u003cp\u003eBest regards,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
-          "body_preview": "We recently analyzed post-2024 DMARC and Yahoo/Google inbox placement metrics across 40M enterprise emails...",
-          "delay_days": 0,
-          "delay_hours": 0,
-          "send_days": "business_days",
-          "trigger_condition": "immediate",
-          "is_threaded_reply": false,
-          "created_at": "2026-11-19T13:55:25.064351849Z"
-        },
-        {
-          "id": "step-2",
-          "step_number": 2,
-          "title": "Step 2: Relevant Case Study \u0026 Benchmark Bump",
-          "subject": "Re: 2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
-          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eQuick follow-up on my note from earlier this week. One of our recent fintech partners reduced spam complaint rates to \u0026lt;0.01% within 14 days by implementing automated mailbox pooling and reverse DNS verification.\u003c/p\u003e\u003cp\u003eHappy to share their anonymized audit blueprint if helpful for {{company}}.\u003c/p\u003e\u003cp\u003eBest,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
-          "body_preview": "Quick follow-up on my note from earlier this week. One of our recent fintech partners reduced spam complaints...",
-          "delay_days": 3,
-          "delay_hours": 0,
-          "send_days": "business_days",
-          "trigger_condition": "no_reply",
-          "is_threaded_reply": true,
-          "created_at": "2026-11-19T13:55:25.064351994Z"
-        },
-        {
-          "id": "step-3",
-          "step_number": 3,
-          "title": "Step 3: Polite Breakup \u0026 Permission to Close",
-          "subject": "Re: 2026 Enterprise Email Authentication \u0026 Deliverability Index for {{company}}",
-          "body_html": "\u003cp\u003eHi {{first_name}},\u003c/p\u003e\u003cp\u003eI realize you are likely heads down on critical engineering initiatives. I won't crowd your inbox any further.\u003c/p\u003e\u003cp\u003eIf email infrastructure, IP warmup, or Yahoo/Google deliverability compliance becomes a priority later this quarter, feel free to reconnect.\u003c/p\u003e\u003cp\u003eWishing you and {{company}} continued success,\u003cbr\u003e{{sender_name}}\u003c/p\u003e",
-          "body_preview": "I realize you are likely heads down on critical engineering initiatives. I won't crowd your inbox any further...",
-          "delay_days": 4,
-          "delay_hours": 0,
-          "send_days": "business_days",
-          "trigger_condition": "no_reply",
-          "is_threaded_reply": true,
-          "created_at": "2026-11-19T13:55:25.064352066Z"
-        }
-      ],
-      "created_at": "2026-11-19T13:55:25.064352138Z"
     }
   ],
   "smtp_credentials": [
+    {
+      "id": "cred-mbx-b943b3da",
+      "username": "admin@apex-cloud.io",
+      "password": "Mbx_15fba27e77906d78!",
+      "password_hash": "9ae309b263683234264492fdf288af6fd057a0cc6b027d8bb03ac0c71dfa6389",
+      "description": "Mailbox login for admin@apex-cloud.io",
+      "pool_id": "",
+      "enabled": true,
+      "created_at": "2026-11-19T16:15:15.389993345Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
     {
       "id": "cred-mbx-e89e1215",
       "username": "support@acme-corp.com",
@@ -3689,17 +3857,6 @@
       "pool_id": "",
       "enabled": true,
       "created_at": "2026-11-19T16:15:15.389985663Z",
-      "updated_at": "0001-01-01T00:00:00Z"
-    },
-    {
-      "id": "cred-mbx-b943b3da",
-      "username": "admin@apex-cloud.io",
-      "password": "Mbx_15fba27e77906d78!",
-      "password_hash": "9ae309b263683234264492fdf288af6fd057a0cc6b027d8bb03ac0c71dfa6389",
-      "description": "Mailbox login for admin@apex-cloud.io",
-      "pool_id": "",
-      "enabled": true,
-      "created_at": "2026-11-19T16:15:15.389993345Z",
       "updated_at": "0001-01-01T00:00:00Z"
     }
   ]

@@ -51,9 +51,15 @@ end)
 sources:setup { '/opt/kumomta/etc/policy/sources.toml' }
 
 -- Phase 4: Native Wire-Speed Cryptographic DKIM Signing (RFC 6376)
+local dkim_signer_cache = {}
 local function get_dkim_signer_for_domain(domain)
   if not domain or domain == '' then
     return nil
+  end
+
+  local entry = dkim_signer_cache[domain]
+  if entry and (os.time() - entry.ts) < 600 then
+    return entry.signer
   end
 
   local ok, res = pcall(function()
@@ -76,6 +82,7 @@ local function get_dkim_signer_for_domain(domain)
         }
       end)
       if signer_ok and signer then
+        dkim_signer_cache[domain] = { signer = signer, ts = os.time() }
         return signer
       end
     end
@@ -83,13 +90,8 @@ local function get_dkim_signer_for_domain(domain)
   return nil
 end
 
-local memoized_dkim_signer = kumo.memoize(get_dkim_signer_for_domain, {
-  name = 'mailops_memoized_dkim_signer',
-  ttl = '10 minutes',
-  capacity = 128,
-})
-
 -- Helper: Check if domain is registered locally in MailOps
+local local_domains_cache = {}
 local function is_domain_local(domain)
   if not domain or domain == '' then
     return false
@@ -97,6 +99,11 @@ local function is_domain_local(domain)
   local clean = string.lower(domain):gsub('^<', ''):gsub('>$', '')
   if clean == 'zmail.local' or clean == 'mailops.local' then
     return true
+  end
+
+  local entry = local_domains_cache[clean]
+  if entry and (os.time() - entry.ts) < 60 then
+    return entry.is_local
   end
 
   local ok, res = pcall(function()
@@ -108,17 +115,13 @@ local function is_domain_local(domain)
   if ok and res and res:status_code() == 200 then
     local parse_ok, data = pcall(kumo.serde.json_parse, res:text())
     if parse_ok and data and data.is_local then
+      local_domains_cache[clean] = { is_local = true, ts = os.time() }
       return true
     end
   end
+  local_domains_cache[clean] = { is_local = false, ts = os.time() }
   return false
 end
-
-local memoized_is_local = kumo.memoize(is_domain_local, {
-  name = 'mailops_memoized_is_local',
-  ttl = '30 seconds',
-  capacity = 256,
-})
 
 -- Traffic Shaping configuration
 local shaper = shaping:setup_with_automation {
@@ -271,7 +274,7 @@ kumo.on('smtp_server_message_received', function(msg)
   local is_local = false
   if rec_domain == 'zmail.local' or rec_domain == 'mailops.local' then
     is_local = true
-  elseif rec_domain ~= '' and memoized_is_local(rec_domain) then
+  elseif rec_domain ~= '' and is_domain_local(rec_domain) then
     is_local = true
   end
 
@@ -305,7 +308,7 @@ kumo.on('smtp_server_message_received', function(msg)
     end
 
     if sender_domain and sender_domain ~= '' then
-      local signer = memoized_dkim_signer(sender_domain)
+      local signer = get_dkim_signer_for_domain(sender_domain)
       if signer then
         msg:dkim_sign(signer)
       end
