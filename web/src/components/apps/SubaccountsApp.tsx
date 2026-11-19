@@ -40,6 +40,7 @@ import {
 } from "../../lib/api";
 import { Subaccount, APIKey, SubaccountStats } from "../../types/os";
 import { useWindowManager } from "../../context/WindowManagerContext";
+import { copyToClipboardSafe } from "../../lib/clipboard";
 
 export const SubaccountsApp: React.FC = () => {
   const { currentUser } = useWindowManager();
@@ -238,10 +239,12 @@ export const SubaccountsApp: React.FC = () => {
     }
   };
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  const copyToClipboard = async (text: string, id: string) => {
+    const ok = await copyToClipboardSafe(text);
+    if (ok) {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   };
 
   // Filtered lists
@@ -1074,10 +1077,12 @@ print(resp.json())`}
                   {newlyGeneratedKey}
                 </code>
                 <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(newlyGeneratedKey);
-                    setCopiedKey(true);
-                    setTimeout(() => setCopiedKey(false), 2500);
+                  onClick={async () => {
+                    const ok = await copyToClipboardSafe(newlyGeneratedKey);
+                    if (ok) {
+                      setCopiedKey(true);
+                      setTimeout(() => setCopiedKey(false), 2500);
+                    }
                   }}
                   className="px-3 py-1.5 bg-[#ff69b4] hover:bg-[#ff69b4]/90 text-slate-950 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shrink-0"
                 >

@@ -24,7 +24,12 @@ import {
   Shield,
   Search,
   Activity,
-  Flame
+  Flame,
+  Download,
+  Code2,
+  Terminal,
+  Zap,
+  Info
 } from "lucide-react";
 import {
   fetchDomains,
@@ -34,6 +39,8 @@ import {
   verifyDomain,
   generateDkimKey,
   syncCloudflareDNS,
+  fetchCloudflareStatus,
+  saveCloudflareCredentials,
   fetchInfrastructureDetection,
   detectInfrastructureNow,
   InfrastructureInfo,
@@ -42,6 +49,7 @@ import {
   RBLTargetAudit,
   RBLAuditSummary
 } from "../../lib/api";
+import { copyToClipboardSafe } from "../../lib/clipboard";
 
 interface DomainRecord {
   id: string;
@@ -126,12 +134,16 @@ export const DnsDomainsApp: React.FC = () => {
 
 
   const [cfToken, setCfToken] = useState<string>("");
+  const [cfApiKey, setCfApiKey] = useState<string>("");
+  const [cfEmail, setCfEmail] = useState<string>("");
   const [cfZoneId, setCfZoneId] = useState<string>("");
-  const [cfIncludeMx, setCfIncludeMx] = useState<boolean>(false);
+  const [cfIncludeMx, setCfIncludeMx] = useState<boolean>(true);
   const [cfRemember, setCfRemember] = useState<boolean>(true);
   const [isSyncingCf, setIsSyncingCf] = useState<boolean>(false);
   const [cfSyncStatus, setCfSyncStatus] = useState<string>("");
   const [cfSyncError, setCfSyncError] = useState<string>("");
+  const [cfServerStatus, setCfServerStatus] = useState<{ configured: boolean; auth_type?: string; email?: string } | null>(null);
+  const [cfTab, setCfTab] = useState<"auto" | "api" | "bind" | "script">("auto");
 
   // Infrastructure auto-detection state
   const [infraInfo, setInfraInfo] = useState<InfrastructureInfo | null>(null);
@@ -154,14 +166,26 @@ export const DnsDomainsApp: React.FC = () => {
     if (typeof window !== "undefined") {
       const savedToken = localStorage.getItem("mailops_cf_token");
       if (savedToken) setCfToken(savedToken);
+      const savedEmail = localStorage.getItem("mailops_cf_email");
+      if (savedEmail) setCfEmail(savedEmail);
+      const savedKey = localStorage.getItem("mailops_cf_key");
+      if (savedKey) setCfApiKey(savedKey);
     }
     fetchInfrastructureDetection().then(setInfraInfo).catch(() => null);
+    fetchCloudflareStatus().then((s) => {
+      setCfServerStatus(s);
+      if (s.configured) {
+        setCfTab("auto");
+      }
+    }).catch(() => null);
   }, []);
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(""), 2000);
+  const copyToClipboard = async (text: string, id: string) => {
+    const ok = await copyToClipboardSafe(text);
+    if (ok) {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(""), 2200);
+    }
   };
 
   const loadDomains = async () => {
@@ -296,38 +320,44 @@ export const DnsDomainsApp: React.FC = () => {
     }
   };
 
-  const handleSyncCloudflare = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedDomain || !cfToken.trim()) return;
+  const handleSyncCloudflare = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!selectedDomain) return;
 
     try {
       setIsSyncingCf(true);
       setCfSyncError("");
-      setCfSyncStatus("Connecting to Cloudflare API and syncing DNS records...");
+      setCfSyncStatus("Authenticating with Cloudflare and auto-publishing DNS records...");
 
-      if (cfRemember) {
-        localStorage.setItem("mailops_cf_token", cfToken.trim());
+      if (cfRemember && (cfToken.trim() || (cfApiKey.trim() && cfEmail.trim()))) {
+        if (cfToken.trim()) localStorage.setItem("mailops_cf_token", cfToken.trim());
+        if (cfEmail.trim()) localStorage.setItem("mailops_cf_email", cfEmail.trim());
+        if (cfApiKey.trim()) localStorage.setItem("mailops_cf_key", cfApiKey.trim());
+        saveCloudflareCredentials({
+          api_token: cfToken.trim() || undefined,
+          api_key: cfApiKey.trim() || undefined,
+          email: cfEmail.trim() || undefined,
+        }).catch(() => null);
       }
 
       const res = await syncCloudflareDNS({
         domain: selectedDomain,
-        api_token: cfToken.trim(),
+        api_token: cfToken.trim() || undefined,
+        api_key: cfApiKey.trim() || undefined,
+        email: cfEmail.trim() || undefined,
         zone_id: cfZoneId.trim() || undefined,
         include_mx: cfIncludeMx,
+        include_a: true,
       });
 
       setCfSyncStatus(
-        `Success! Added/updated ${res.records_created + res.records_updated} DNS records in Cloudflare zone.`
+        `✅ Success! Auto-published ${res.records_created + res.records_updated} DNS records to Cloudflare. Verification is running now...`
       );
       setTimeout(() => {
-        setSubScreen("list");
-        setCfSyncStatus("");
-      }, 2500);
-
-      await checkDomainDns(selectedDomain);
+        checkDomainDns(selectedDomain);
+      }, 1500);
     } catch (err: any) {
-      setCfSyncError(err.message || "Failed to sync DNS records with Cloudflare");
-      setCfSyncStatus("");
+      setCfSyncError(err.message || "Failed to publish DNS records to Cloudflare");
     } finally {
       setIsSyncingCf(false);
     }
@@ -353,6 +383,80 @@ export const DnsDomainsApp: React.FC = () => {
 
   const mxHost = "@";
   const mxValue = currentDomainObj?.mxRecord || `10 mail.${selectedDomain}`;
+
+  const displayMailHost = selectedDomain
+    ? `mail.${selectedDomain}`
+    : infraInfo?.smtp_hostname && !/^[0-9a-f]{12,64}$/i.test(infraInfo.smtp_hostname)
+    ? infraInfo.smtp_hostname
+    : "mail.yourdomain.com";
+
+  const displaySystemHost = infraInfo?.hostname && !/^[0-9a-f]{12,64}$/i.test(infraInfo.hostname)
+    ? infraInfo.hostname
+    : (selectedDomain ? `mail.${selectedDomain}` : "mailops-mta");
+
+  const handleCopyAllRecords = async () => {
+    if (!selectedDomain) return;
+    const text = `=== DNS Authentication Records for ${selectedDomain} ===
+1. DKIM Record (TXT)
+   Host:  ${dkimHost}.${selectedDomain}
+   Type:  TXT
+   Value: ${dkimValue}
+
+2. SPF Record (TXT)
+   Host:  @ (or ${selectedDomain})
+   Type:  TXT
+   Value: ${spfValue}
+
+3. DMARC Policy (TXT)
+   Host:  _dmarc.${selectedDomain}
+   Type:  TXT
+   Value: ${dmarcValue}
+
+4. Inbound MX Record (MX - Optional)
+   Host:  @ (or ${selectedDomain})
+   Type:  MX
+   Value: ${mxValue} (Priority: 10)
+
+5. Egress Mail Host A Record (A)
+   Host:  mail.${selectedDomain}
+   Type:  A
+   Value: ${aValue} (Proxy: DNS Only)`;
+
+    await copyToClipboard(text, "all-records");
+  };
+
+  const handleDownloadBindZone = () => {
+    if (!selectedDomain) return;
+    const content = `; Cloudflare / BIND DNS Zone File for ${selectedDomain}
+; Generated by MailOS
+$ORIGIN ${selectedDomain}.
+$TTL 3600
+
+; Egress Mail Server Host (DNS Only / No CDN Proxy)
+mail 3600 IN A ${aValue}
+
+; Inbound MX Record
+@ 3600 IN MX 10 mail.${selectedDomain}.
+
+; SPF Authorization Record
+@ 3600 IN TXT "${spfValue}"
+
+; DKIM 2048-bit RSA Signature
+${selector}._domainkey 3600 IN TXT "${dkimValue}"
+
+; DMARC Policy Record
+_dmarc 3600 IN TXT "${dmarcValue}"
+`;
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${selectedDomain}-cloudflare-dns.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const isDkimVerified = dnsDetails?.dkim_valid ?? false;
   const isSpfVerified = dnsDetails?.spf_valid ?? false;
@@ -549,13 +653,13 @@ export const DnsDomainsApp: React.FC = () => {
               <span className="font-bold text-sm text-zinc-300 font-mono mt-0.5 block truncate">
                 {infraInfo?.local_ip || "127.0.0.1"}
               </span>
-              <span className="text-[10px] text-[#62666d]">Host: {infraInfo?.hostname || "localhost"}</span>
+              <span className="text-[10px] text-[#62666d]">Host: {displaySystemHost}</span>
             </div>
 
             <div className="p-2.5 rounded-lg bg-[#11131a] border border-[#1e222c]">
               <span className="text-[10px] text-[#8a8f98] uppercase font-mono block">SMTP Hostname</span>
               <span className="font-bold text-sm text-zinc-300 font-mono mt-0.5 block truncate">
-                {infraInfo?.smtp_hostname || `mail.${selectedDomain || "domain.com"}`}
+                {displayMailHost}
               </span>
               <span className="text-[10px] text-[#62666d]">Env: {infraInfo?.environment || "container"}</span>
             </div>
@@ -587,7 +691,7 @@ export const DnsDomainsApp: React.FC = () => {
           <div className="p-2.5 rounded-lg bg-[#161a25] border border-[#273248] text-[11px] text-[#a0a6b5] flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-[#ffc53d] shrink-0 mt-0.5" />
             <p className="leading-relaxed">
-              <strong>Note on Reverse DNS (PTR):</strong> PTR records cannot be created in regular DNS zone managers. You must configure reverse DNS in your VPS / hosting provider control panel (e.g. AWS, Hetzner, DigitalOcean) so that <code className="text-[#ff69b4] font-mono px-1 rounded bg-[#090a0d]">{infraInfo?.public_ip || "your public IP"}</code> resolves back to <code className="text-[#ff69b4] font-mono px-1 rounded bg-[#090a0d]">{infraInfo?.smtp_hostname || `mail.${selectedDomain || "domain.com"}`}</code>.
+              <strong>Note on Reverse DNS (PTR):</strong> PTR records are managed at your IP network provider. Ensure your public IP <code className="text-[#ff69b4] font-mono px-1 rounded bg-[#090a0d]">{infraInfo?.public_ip || "your public IP"}</code> has a PTR record resolving back to <code className="text-[#ff69b4] font-mono px-1 rounded bg-[#090a0d]">{displayMailHost}</code>.
             </p>
           </div>
         </div>
@@ -634,7 +738,27 @@ export const DnsDomainsApp: React.FC = () => {
                   title="Automatically publish DNS records to Cloudflare via API"
                 >
                   <Cloud className="w-3.5 h-3.5" />
-                  <span>Auto-add to Cloudflare</span>
+                  <span>Sync Cloudflare</span>
+                </button>
+
+                {/* 1-Click Copy All Records */}
+                <button
+                  onClick={handleCopyAllRecords}
+                  className="px-3.5 py-1.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#f7f8f8] text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Copy all DNS records (SPF, DKIM, DMARC, MX, A) to clipboard"
+                >
+                  {copiedId === "all-records" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedId === "all-records" ? "Copied All!" : "Copy All Records"}</span>
+                </button>
+
+                {/* 1-Click BIND Zone File for Cloudflare Import */}
+                <button
+                  onClick={handleDownloadBindZone}
+                  className="px-3.5 py-1.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#f7f8f8] text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Download Cloudflare BIND Zone file (.txt) for zero-key 1-click import in Cloudflare dashboard"
+                >
+                  <Download className="w-3.5 h-3.5 text-[#ff69b4]" />
+                  <span>DNS Zone File (.txt)</span>
                 </button>
 
                 {/* 1-Click RBL Blacklist Scan Button */}
@@ -993,6 +1117,60 @@ export const DnsDomainsApp: React.FC = () => {
                 </div>
               </div>
 
+              {/* Record 4b: Host A Record */}
+              <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-[#5e6ad2]/20 text-[#5e6ad2] font-mono text-[10px] font-bold border border-[#5e6ad2]/30">
+                      A (REQUIRED FOR MAIL HOST)
+                    </span>
+                    <span className="font-semibold text-[#f7f8f8] text-xs">
+                      Mail Host Forward A Record
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono text-[#8a8f98]">
+                    Proxy status: DNS Only (Gray Cloud)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-2 text-[11px]">
+                  <div className="md:col-span-4 p-2.5 rounded bg-[#070709] border border-[#1e2023] flex items-center justify-between">
+                    <div>
+                      <div className="text-[10px] uppercase font-mono text-[#62666d]">Hostname / Name</div>
+                      <div className="font-mono text-[#f7f8f8] select-all">mail</div>
+                    </div>
+                    <button
+                      onClick={() => copyToClipboard("mail", "a-host")}
+                      className="p-1.5 hover:bg-[#18191a] rounded text-[#8a8f98] hover:text-[#f7f8f8] transition-colors"
+                      title="Copy host"
+                    >
+                      {copiedId === "a-host" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  <div className="md:col-span-8 p-2.5 rounded bg-[#070709] border border-[#1e2023] flex items-center justify-between gap-2">
+                    <div className="overflow-hidden flex-1">
+                      <div className="text-[10px] uppercase font-mono text-[#62666d]">Public Egress IP</div>
+                      <div className="font-mono text-[#ff69b4] text-[10px] select-all truncate">{aValue}</div>
+                    </div>
+                    <button
+                      onClick={() => copyToClipboard(aValue, "a-val")}
+                      className="px-2 py-1 rounded bg-[#18191a] hover:bg-[#23252a] text-[#f7f8f8] border border-[#2b2d33] text-[10px] flex items-center gap-1 font-mono flex-shrink-0"
+                    >
+                      {copiedId === "a-val" ? (
+                        <>
+                          <Check className="w-3 h-3 text-[#27a644]" /> Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" /> Copy Record
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* Record 5: Reverse DNS (PTR) */}
               <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-2">
                 <div className="flex items-center justify-between">
@@ -1034,7 +1212,7 @@ export const DnsDomainsApp: React.FC = () => {
     </>
   )}
 
-      {/* Cloudflare Auto-Add Screen (NO DIALOG OVERLAY) */}
+      {/* Cloudflare 1-Click Sync Center */}
       {subScreen === "cloudflare" && (
         <div className="flex-1 flex flex-col bg-[#0a0a0c] overflow-y-auto">
           <div className="px-5 py-3 bg-[#0f1011] border-b border-[#23252a] flex items-center justify-between">
@@ -1048,88 +1226,346 @@ export const DnsDomainsApp: React.FC = () => {
               <span className="text-[#62666d]">/</span>
               <span className="font-semibold text-sm text-[#f7f8f8] flex items-center gap-2">
                 <Cloud className="w-4 h-4 text-[#f38020]" />
-                Auto-add to Cloudflare DNS
+                Cloudflare DNS Sync Center
               </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-[#14151a] p-1 rounded-lg border border-[#232734]">
+              <button
+                type="button"
+                onClick={() => setCfTab("auto")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  cfTab === "auto"
+                    ? "bg-[#f38020] text-white shadow-sm"
+                    : "text-[#8a8f98] hover:text-white"
+                }`}
+              >
+                ⚡ 1-Click Auto Sync
+              </button>
+              <button
+                type="button"
+                onClick={() => setCfTab("bind")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  cfTab === "bind"
+                    ? "bg-[#f38020] text-white shadow-sm"
+                    : "text-[#8a8f98] hover:text-white"
+                }`}
+              >
+                📥 Zero-Key BIND Import
+              </button>
+              <button
+                type="button"
+                onClick={() => setCfTab("script")}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  cfTab === "script"
+                    ? "bg-[#f38020] text-white shadow-sm"
+                    : "text-[#8a8f98] hover:text-white"
+                }`}
+              >
+                💻 Browser Session Script
+              </button>
             </div>
           </div>
 
-          <div className="max-w-xl mx-auto w-full p-6">
-            <form onSubmit={handleSyncCloudflare} className="space-y-4 bg-[#121316] border border-[#23252a] rounded-xl p-6 shadow-2xl">
-              <div>
-                <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">Target Domain</label>
-                <input
-                  type="text"
-                  disabled
-                  value={selectedDomain}
-                  className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono opacity-80"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">Cloudflare API Token</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Paste Bearer Token with Zone.DNS edit permissions"
-                  value={cfToken}
-                  onChange={(e) => setCfToken(e.target.value)}
-                  className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">Cloudflare Zone ID</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="32-character hexadecimal zone id"
-                  value={cfZoneId}
-                  onChange={(e) => setCfZoneId(e.target.value)}
-                  className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
-                />
-              </div>
-
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="includeMxCf"
-                  checked={cfIncludeMx}
-                  onChange={(e) => setCfIncludeMx(e.target.checked)}
-                  className="rounded border-[#23252a] bg-[#0a0a0c] text-[#ff69b4]"
-                />
-                <label htmlFor="includeMxCf" className="text-[11px] text-[#8a8f98]">
-                  Also publish fallback MX record pointing to local spool relay
-                </label>
-              </div>
-
-              {cfSyncStatus && (
-                <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800/40 text-emerald-300 text-xs">
-                  {cfSyncStatus}
+          <div className="max-w-2xl mx-auto w-full p-6">
+            {/* TAB 1: 1-CLICK AUTO SYNC */}
+            {cfTab === "auto" && (
+              <div className="space-y-4 bg-[#121316] border border-[#23252a] rounded-xl p-6 shadow-2xl">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-bold text-sm text-white">Target Sending Domain</span>
+                    <span className="text-[11px] font-mono text-[#ff69b4]">Selected</span>
+                  </div>
+                  <div className="p-2.5 rounded bg-[#0a0a0c] border border-[#23252a] text-xs font-mono text-white flex items-center justify-between">
+                    <span>{selectedDomain || "No domain selected"}</span>
+                    <span className="text-[10px] text-[#8a8f98]">5 Records (SPF, DKIM, DMARC, MX, A)</span>
+                  </div>
                 </div>
-              )}
-              {cfSyncError && (
-                <div className="p-2.5 rounded bg-red-950/40 border border-red-800/40 text-red-300 text-xs">
-                  {cfSyncError}
-                </div>
-              )}
 
-              <div className="pt-3 border-t border-[#23252a] flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSubScreen("list")}
-                  className="px-3.5 py-1.5 rounded bg-[#18191a] text-[#8a8f98] hover:text-[#f7f8f8] text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSyncingCf}
-                  className="px-4 py-1.5 bg-[#ff69b4] hover:bg-[#ff52a8] text-[#0a0a0c] font-bold rounded text-xs cursor-pointer"
-                >
-                  {isSyncingCf ? "Publishing Records..." : "Publish to Cloudflare Zone"}
-                </button>
+                {cfServerStatus?.configured ? (
+                  <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-800/40 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                        <div>
+                          <div className="font-semibold text-white text-xs">Cloudflare Pre-Authenticated</div>
+                          <div className="text-[11px] text-emerald-300/80 font-mono">
+                            {cfServerStatus.email ? `Account: ${cfServerStatus.email}` : "API Token Loaded"} • Zero-Key Sync Ready
+                          </div>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        Zero-Key Mode
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-[#8a8f98] leading-relaxed">
+                      Your Cloudflare connection is pre-authenticated on the server. Click below to automatically discover your zone and publish all 5 authentication records directly to Cloudflare without entering any keys.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSyncCloudflare()}
+                      disabled={isSyncingCf}
+                      className="w-full py-2.5 bg-[#f38020] hover:bg-[#fa8b2c] text-white font-bold rounded-lg text-xs flex items-center justify-center gap-2 shadow-lg shadow-[#f38020]/20 cursor-pointer disabled:opacity-50"
+                    >
+                      <Cloud className={`w-4 h-4 ${isSyncingCf ? "animate-spin" : ""}`} />
+                      <span>{isSyncingCf ? "Auto-publishing to Cloudflare..." : "⚡ 1-Click Sync to Cloudflare"}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSyncCloudflare} className="space-y-4">
+                    <div className="p-3 rounded-lg bg-[#0e1017] border border-[#1e2330] text-[11px] text-[#8a8f98] flex items-start gap-2">
+                      <Info className="w-4 h-4 text-[#f38020] shrink-0 mt-0.5" />
+                      <span>
+                        Enter your Cloudflare API Token (or Global API Key + Email) once. You can check <strong>"Remember credentials"</strong> so you and your team never have to enter keys again!
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                        Cloudflare API Token <span className="text-[#62666d]">(Recommended: Scoped Zone.DNS edit)</span>
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="Paste Bearer Token from dash.cloudflare.com/profile/api-tokens"
+                        value={cfToken}
+                        onChange={(e) => setCfToken(e.target.value)}
+                        className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                          Or Cloudflare Email <span className="text-[#62666d]">(For Global Key)</span>
+                        </label>
+                        <input
+                          type="email"
+                          placeholder="your-email@example.com"
+                          value={cfEmail}
+                          onChange={(e) => setCfEmail(e.target.value)}
+                          className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                          Global API Key <span className="text-[#62666d]">(Optional)</span>
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="Global API Key"
+                          value={cfApiKey}
+                          onChange={(e) => setCfApiKey(e.target.value)}
+                          className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
+                        Zone ID <span className="text-[#62666d]">(Optional — Leave blank for auto-detection)</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Auto-detected from domain name if omitted"
+                        value={cfZoneId}
+                        onChange={(e) => setCfZoneId(e.target.value)}
+                        className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="checkbox"
+                        id="rememberCf"
+                        checked={cfRemember}
+                        onChange={(e) => setCfRemember(e.target.checked)}
+                        className="rounded border-[#23252a] bg-[#0a0a0c] text-[#ff69b4]"
+                      />
+                      <label htmlFor="rememberCf" className="text-[11px] text-[#f7f8f8] font-medium cursor-pointer">
+                        Remember credentials on server (Enables 1-click zero-key sync for all domains)
+                      </label>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-[#23252a]">
+                      <button
+                        type="button"
+                        onClick={() => setSubScreen("list")}
+                        className="px-3.5 py-1.5 rounded bg-[#18191a] text-[#8a8f98] hover:text-[#f7f8f8] text-xs cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSyncingCf || (!cfToken.trim() && (!cfApiKey.trim() || !cfEmail.trim()))}
+                        className="px-4 py-2 bg-[#f38020] hover:bg-[#fa8b2c] text-white font-bold rounded text-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        <Cloud className={`w-3.5 h-3.5 ${isSyncingCf ? "animate-spin" : ""}`} />
+                        <span>{isSyncingCf ? "Publishing Records..." : "Connect & Publish All Records"}</span>
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {cfSyncStatus && (
+                  <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-emerald-300 text-xs flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>{cfSyncStatus}</span>
+                  </div>
+                )}
+                {cfSyncError && (
+                  <div className="p-3 rounded-lg bg-red-950/40 border border-red-800/40 text-red-300 text-xs flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <span>{cfSyncError}</span>
+                  </div>
+                )}
               </div>
-            </form>
+            )}
+
+            {/* TAB 2: ZERO-KEY BIND ZONE FILE IMPORT */}
+            {cfTab === "bind" && (
+              <div className="space-y-4 bg-[#121316] border border-[#23252a] rounded-xl p-6 shadow-2xl">
+                <div className="flex items-center gap-2 pb-3 border-b border-[#23252a]">
+                  <Download className="w-5 h-5 text-[#ff69b4]" />
+                  <div>
+                    <h3 className="font-bold text-sm text-white">1-Click Cloudflare Native DNS Import</h3>
+                    <p className="text-[11px] text-[#8a8f98]">
+                      100% Zero API Keys. Upload directly through Cloudflare's built-in DNS import feature.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3 text-xs text-[#8a8f98] leading-relaxed">
+                  <div className="p-3 rounded-lg bg-[#0a0a0c] border border-[#1e2330] space-y-2">
+                    <div className="text-white font-semibold flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-[#ff69b4]/20 text-[#ff69b4] text-[10px] flex items-center justify-center font-bold">1</span>
+                      Download the Cloudflare DNS File:
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleDownloadBindZone}
+                        className="px-4 py-2 bg-[#ff69b4] hover:bg-[#ff52a5] text-black font-bold rounded-lg text-xs flex items-center gap-2 shadow-md shadow-[#ff69b4]/20 cursor-pointer"
+                      >
+                        <Download className="w-4 h-4" />
+                        <span>Download {selectedDomain}-cloudflare-dns.txt</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const content = `; Cloudflare BIND Zone File for ${selectedDomain}
+$ORIGIN ${selectedDomain}.
+$TTL 3600
+mail 3600 IN A ${aValue}
+@ 3600 IN MX 10 mail.${selectedDomain}.
+@ 3600 IN TXT "${spfValue}"
+${selector}._domainkey 3600 IN TXT "${dkimValue}"
+_dmarc 3600 IN TXT "${dmarcValue}"
+`;
+                          await copyToClipboard(content, "bind-content");
+                        }}
+                        className="px-3 py-2 bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-white font-medium rounded-lg text-xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedId === "bind-content" ? <Check className="w-3.5 h-3.5 text-[#27a644]" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedId === "bind-content" ? "Copied!" : "Copy File Content"}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-[#0a0a0c] border border-[#1e2330] space-y-1.5">
+                    <div className="text-white font-semibold flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-[#f38020]/20 text-[#f38020] text-[10px] flex items-center justify-center font-bold">2</span>
+                      Import into Cloudflare in 2 seconds:
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-[#8a8f98] pl-2">
+                      <li>Open your domain in <a href="https://dash.cloudflare.com" target="_blank" rel="noreferrer" className="text-[#ff69b4] underline">Cloudflare Dashboard</a>.</li>
+                      <li>Navigate to <strong>DNS</strong> → <strong>Records</strong>.</li>
+                      <li>Click the <strong>Import and Export</strong> link (top right above records table).</li>
+                      <li>Click <strong>Import DNS Records</strong> and select the downloaded file.</li>
+                      <li>Done! Cloudflare adds SPF, DKIM, DMARC, MX, and Mail Host A records instantly.</li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: 1-CLICK BROWSER CONSOLE SCRIPT */}
+            {cfTab === "script" && (
+              <div className="space-y-4 bg-[#121316] border border-[#23252a] rounded-xl p-6 shadow-2xl">
+                <div className="flex items-center gap-2 pb-3 border-b border-[#23252a]">
+                  <Terminal className="w-5 h-5 text-emerald-400" />
+                  <div>
+                    <h3 className="font-bold text-sm text-white">Browser Session Auto-Publisher</h3>
+                    <p className="text-[11px] text-[#8a8f98]">
+                      Uses your already logged-in Cloudflare session in your browser. Zero API keys.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3 text-xs text-[#8a8f98] leading-relaxed">
+                  <p>
+                    If you already have Cloudflare open in another browser tab, you are already authenticated! You can paste this snippet into your browser console to create all 5 records in 1 second.
+                  </p>
+
+                  <div className="p-3 rounded-lg bg-[#070709] border border-[#1e2023] font-mono text-[10px] text-emerald-300 overflow-x-auto max-h-48">
+                    <pre>{`(async () => {
+  const match = location.pathname.match(/\\/([a-f0-9]{32})/);
+  if (!match) { alert("Please run this while on your Cloudflare DNS page (dash.cloudflare.com)"); return; }
+  const zoneId = match[1];
+  const records = [
+    { type: "TXT", name: "@", content: "${spfValue}", ttl: 3600 },
+    { type: "TXT", name: "${selector}._domainkey", content: "${dkimValue}", ttl: 3600 },
+    { type: "TXT", name: "_dmarc", content: "${dmarcValue}", ttl: 3600 },
+    { type: "A", name: "mail", content: "${aValue}", ttl: 3600, proxied: false },
+    { type: "MX", name: "@", content: "mail.${selectedDomain}", priority: 10, ttl: 3600 }
+  ];
+  for (const r of records) {
+    await fetch(\`/api/v4/zones/\${zoneId}/dns_records\`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(r)
+    });
+  }
+  alert("Success! All 5 DNS records published to Cloudflare.");
+  location.reload();
+})();`}</pre>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const snippet = `(async () => {
+  const match = location.pathname.match(/\\/([a-f0-9]{32})/);
+  if (!match) { alert("Please run this while on your Cloudflare DNS page (dash.cloudflare.com)"); return; }
+  const zoneId = match[1];
+  const records = [
+    { type: "TXT", name: "@", content: "${spfValue}", ttl: 3600 },
+    { type: "TXT", name: "${selector}._domainkey", content: "${dkimValue}", ttl: 3600 },
+    { type: "TXT", name: "_dmarc", content: "${dmarcValue}", ttl: 3600 },
+    { type: "A", name: "mail", content: "${aValue}", ttl: 3600, proxied: false },
+    { type: "MX", name: "@", content: "mail.${selectedDomain}", priority: 10, ttl: 3600 }
+  ];
+  for (const r of records) {
+    await fetch(\`/api/v4/zones/\${zoneId}/dns_records\`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(r)
+    });
+  }
+  alert("Success! All 5 DNS records published to Cloudflare.");
+  location.reload();
+})();`;
+                      await copyToClipboard(snippet, "console-snippet");
+                    }}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                  >
+                    {copiedId === "console-snippet" ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedId === "console-snippet" ? "Snippet Copied to Clipboard!" : "Copy Browser Console Snippet"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

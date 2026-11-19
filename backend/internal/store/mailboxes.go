@@ -773,6 +773,23 @@ func (s *Store) UpdateSystemSettings(settings models.SystemSettings) models.Syst
 	return s.systemSettings
 }
 
+// GetCloudflareConfig returns saved Cloudflare integration credentials
+func (s *Store) GetCloudflareConfig() (token, apiKey, email string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.systemSettings.CloudflareAPIToken, s.systemSettings.CloudflareAPIKey, s.systemSettings.CloudflareEmail
+}
+
+// SetCloudflareConfig saves Cloudflare integration credentials
+func (s *Store) SetCloudflareConfig(token, apiKey, email string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.systemSettings.CloudflareAPIToken = strings.TrimSpace(token)
+	s.systemSettings.CloudflareAPIKey = strings.TrimSpace(apiKey)
+	s.systemSettings.CloudflareEmail = strings.TrimSpace(email)
+	s.saveLocked()
+}
+
 // GetPlaybooks returns all built-in sequence templates
 func (s *Store) GetPlaybooks() []models.AutomationPlaybook {
 	s.mu.RLock()

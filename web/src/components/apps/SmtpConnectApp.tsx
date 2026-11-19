@@ -43,6 +43,7 @@ import {
   testSmtpConnection,
   SMTPTestResult
 } from "../../lib/api";
+import { copyToClipboardSafe } from "../../lib/clipboard";
 
 interface HostInfo {
   detected_host: string;
@@ -108,10 +109,12 @@ export const SmtpConnectApp: React.FC = () => {
   // Code snippets language state
   const [codeLang, setCodeLang] = useState<"nodejs" | "python" | "php" | "go" | "curl" | "wordpress">("nodejs");
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(""), 2000);
+  const copyToClipboard = async (text: string, id: string) => {
+    const ok = await copyToClipboardSafe(text);
+    if (ok) {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(""), 2000);
+    }
   };
 
   const loadData = async () => {

@@ -50,60 +50,12 @@ interface WebmailMessage {
   dkimStatus: "valid" | "invalid";
 }
 
-const SEED_MESSAGES: WebmailMessage[] = [
-  {
-    id: "wm-1",
-    from: "elena.rostova@cloudscale.io",
-    fromName: "Elena Rostova",
-    to: "sarah@growth.zmail.local",
-    subject: "Re: High-volume outbound delivery architecture review",
-    body: "Hi Sarah,\n\nThanks for sending over the benchmarks! We tested the new DKIM 2048-bit keys on our secondary domain yesterday and saw our Gmail postmaster reputation bounce right back to High within 12 hours.\n\nCould we schedule a 15-minute quick sync tomorrow at 2 PM EST to finalize the IP rotation pool weights?\n\nBest,\nElena Rostova\nVP Infrastructure, CloudScale",
-    date: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
-    isRead: false,
-    isStarred: true,
-    folder: "inbox",
-    threadId: "th-arch-01",
-    spfStatus: "pass",
-    dkimStatus: "valid",
-  },
-  {
-    id: "wm-2",
-    from: "david.kim@vortexai.tech",
-    fromName: "David Kim",
-    to: "alex@growth.zmail.local",
-    subject: "Partnership Inquiry: Autonomous Email AI Agents",
-    body: "Hey Alex,\n\nCame across MailOps on GitHub and was blown away by the dual-engine MTA + Dovecot architecture. We are building enterprise sales intelligence agents and would love to integrate your sender rotation APIs for our automated sequences.\n\nAre you open to discussing an API tier partnership?\n\nCheers,\nDavid Kim\nFounder & CEO, Vortex AI",
-    date: new Date(Date.now() - 95 * 60 * 1000).toISOString(),
-    isRead: true,
-    isStarred: false,
-    folder: "inbox",
-    threadId: "th-part-02",
-    spfStatus: "pass",
-    dkimStatus: "valid",
-  },
-  {
-    id: "wm-3",
-    from: "sarah@growth.zmail.local",
-    fromName: "Sarah Jenkins",
-    to: "alex.morgan@nextgencloud.org",
-    subject: "Automated Warmup: Cloud Architecture & Scaling",
-    body: "Hi Alex,\n\nFollowing up on the RocksDB spool write-ahead log tuning we discussed. Once we switched to asynchronous micro-batches, p99 latency dropped from 42ms down to 4ms on KumoMTA.\n\nLet me know if your test instance reflects the same gains.\n\nRegards,\nSarah Jenkins",
-    date: new Date(Date.now() - 180 * 60 * 1000).toISOString(),
-    isRead: true,
-    isStarred: false,
-    folder: "sent",
-    threadId: "th-warmup-03",
-    spfStatus: "pass",
-    dkimStatus: "valid",
-  },
-];
-
 export const WebmailApp: React.FC = () => {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [selectedMailboxFilter, setSelectedMailboxFilter] = useState<string>("all");
   const [selectedFolder, setSelectedFolder] = useState<"inbox" | "sent" | "starred" | "warmup" | "trash">("inbox");
-  const [messages, setMessages] = useState<WebmailMessage[]>(SEED_MESSAGES);
-  const [selectedMessage, setSelectedMessage] = useState<WebmailMessage | null>(SEED_MESSAGES[0]);
+  const [messages, setMessages] = useState<WebmailMessage[]>([]);
+  const [selectedMessage, setSelectedMessage] = useState<WebmailMessage | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);

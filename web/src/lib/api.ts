@@ -110,9 +110,12 @@ export async function generateDkimKey(domain: string, selector = "k202611") {
 
 export async function syncCloudflareDNS(params: {
   domain: string;
-  api_token: string;
+  api_token?: string;
+  api_key?: string;
+  email?: string;
   zone_id?: string;
   include_mx?: boolean;
+  include_a?: boolean;
 }) {
   const res = await fetch(`${API_BASE}/api/v1/domains/cloudflare/sync`, {
     method: "POST",
@@ -122,6 +125,34 @@ export async function syncCloudflareDNS(params: {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
     throw new Error(data.error || "Failed to sync DNS records to Cloudflare");
+  }
+  return data;
+}
+
+export async function fetchCloudflareStatus(): Promise<{
+  configured: boolean;
+  auth_type?: string;
+  email?: string;
+  source?: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/v1/domains/cloudflare/status`);
+  if (!res.ok) return { configured: false };
+  return res.json().catch(() => ({ configured: false }));
+}
+
+export async function saveCloudflareCredentials(params: {
+  api_token?: string;
+  api_key?: string;
+  email?: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/v1/domains/cloudflare/credentials`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) {
+    throw new Error(data.error || "Failed to save Cloudflare credentials");
   }
   return data;
 }

@@ -407,6 +407,9 @@ type SystemSettings struct {
 	CustomLegalFooter        string `json:"custom_legal_footer"`
 	CompanyAddress           string `json:"company_address"`
 	BrandingEnabled          bool   `json:"branding_enabled"`
+	CloudflareAPIToken       string `json:"cloudflare_api_token,omitempty"`
+	CloudflareAPIKey         string `json:"cloudflare_api_key,omitempty"`
+	CloudflareEmail          string `json:"cloudflare_email,omitempty"`
 }
 
 // CampaignDispatchRequest requests execution of a campaign broadcast

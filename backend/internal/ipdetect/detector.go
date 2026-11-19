@@ -106,8 +106,29 @@ func (d *Detector) Detect(ctx context.Context, configuredIPs []string, primaryDo
 	}
 
 	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "mailops-node"
+	isHexContainer := func(h string) bool {
+		if len(h) != 12 && len(h) != 64 {
+			return false
+		}
+		for _, c := range h {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+
+	sysHost := os.Getenv("SYSTEM_HOSTNAME")
+	if sysHost != "" {
+		hostname = sysHost
+	} else if isHexContainer(hostname) {
+		if primaryDomain != "" {
+			hostname = fmt.Sprintf("mail.%s", primaryDomain)
+		} else {
+			hostname = "mailops-mta"
+		}
+	} else if hostname == "" {
+		hostname = "mailops-mta"
 	}
 
 	localIP := getLocalInterfaceIP()
@@ -115,8 +136,10 @@ func (d *Detector) Detect(ctx context.Context, configuredIPs []string, primaryDo
 	if smtpHostname == "" {
 		if primaryDomain != "" {
 			smtpHostname = fmt.Sprintf("mail.%s", primaryDomain)
-		} else {
+		} else if !isHexContainer(hostname) {
 			smtpHostname = hostname
+		} else {
+			smtpHostname = "mail.zekea.me"
 		}
 	}
 
