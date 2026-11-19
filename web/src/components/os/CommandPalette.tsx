@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useWindowManager } from "../../context/WindowManagerContext";
-import { APPS } from "../../data/mockData";
+import { APPS, APP_CATEGORIES } from "../../data/mockData";
 import { Search, Server, ArrowRight, CheckCircle2 } from "lucide-react";
 
 export const CommandPalette: React.FC = () => {
@@ -64,33 +64,51 @@ export const CommandPalette: React.FC = () => {
             </div>
           )}
 
-          <div className="text-[11px] font-medium text-[#62666d] px-3 py-1.5 uppercase tracking-wider">
-            Applications
-          </div>
+          {APP_CATEGORIES.map((cat) => {
+            const catApps = filteredApps.filter((a) => a.category === cat.name);
+            if (catApps.length === 0) return null;
 
-          {filteredApps.map((app) => (
-            <button
-              key={app.id}
-              onClick={() => {
-                openApp(app.id);
-                toggleCommandPalette();
-              }}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-[#1f2022] text-left text-xs transition-colors group"
-            >
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-md bg-[#18191a] border border-[#2b2d33] flex items-center justify-center text-[#8a8f98] group-hover:text-[#ff69b4] transition-colors">
-                  <Server className="w-3.5 h-3.5" />
+            return (
+              <div key={cat.id} className="pt-2 first:pt-0 space-y-1">
+                {/* Category Header Label on Top */}
+                <div className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cat.color }} />
+                  <span style={{ color: cat.color }}>{cat.name}</span>
+                  <span className="text-[9px] font-mono text-slate-500">({catApps.length})</span>
                 </div>
-                <div>
-                  <div className="text-[#f7f8f8] font-medium">{app.title}</div>
-                  <div className="text-[11px] text-[#8a8f98] truncate max-w-xs">
-                    {app.description}
-                  </div>
-                </div>
+
+                {catApps.map((app) => (
+                  <button
+                    key={app.id}
+                    onClick={() => {
+                      openApp(app.id);
+                      toggleCommandPalette();
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-[#1f2022] text-left text-xs transition-colors group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className="w-7 h-7 rounded-md flex items-center justify-center transition-colors shadow-sm"
+                        style={{
+                          backgroundColor: `${cat.color}15`,
+                          border: `1px solid ${cat.color}35`,
+                        }}
+                      >
+                        <Server className="w-3.5 h-3.5" style={{ color: cat.color }} />
+                      </div>
+                      <div>
+                        <div className="text-[#f7f8f8] font-medium group-hover:text-white">{app.title}</div>
+                        <div className="text-[11px] text-[#8a8f98] truncate max-w-xs">
+                          {app.description}
+                        </div>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-3.5 h-3.5 text-[#62666d] group-hover:text-[#f7f8f8] transition-colors" />
+                  </button>
+                ))}
               </div>
-              <ArrowRight className="w-3.5 h-3.5 text-[#62666d] group-hover:text-[#f7f8f8] transition-colors" />
-            </button>
-          ))}
+            );
+          })}
 
           {filteredApps.length === 0 && !isStatusNote && (
             <div className="py-8 text-center text-xs text-[#8a8f98]">

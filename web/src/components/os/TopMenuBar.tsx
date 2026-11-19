@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useWindowManager } from "../../context/WindowManagerContext";
-import { APPS } from "../../data/mockData";
+import { APPS, APP_CATEGORIES } from "../../data/mockData";
 import {
   Bell,
   Search,
@@ -35,6 +35,7 @@ import {
   LogOut,
   User,
   Radio,
+  LayoutGrid,
 } from "lucide-react";
 import { fetchOutboundPreflight, OutboundPreflightReport } from "../../lib/api";
 import { OutboundDoctorModal } from "../modals/OutboundDoctorModal";
@@ -265,6 +266,63 @@ export const TopMenuBar: React.FC = () => {
 
         {/* Desktop Menu Ribbon */}
         <div className="flex items-center gap-0.5 text-[#8a8f98]">
+          {/* APPS BY CATEGORY MENU */}
+          <div className="relative zmail-menu-item">
+            <button
+              onClick={() => handleMenuClick("categories")}
+              onMouseEnter={() => handleMenuHover("categories")}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded transition-colors cursor-pointer font-medium ${
+                openMenu === "categories" ? "bg-[#ff69b4]/20 text-[#ff69b4] font-bold" : "hover:bg-[#18191a] hover:text-[#f7f8f8]"
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-[#ff69b4]" />
+              <span>Apps</span>
+            </button>
+            {openMenu === "categories" && (
+              <div className="absolute top-full pt-1 left-0 z-50">
+                <div className="w-80 max-h-[85vh] overflow-y-auto bg-[#12141c] border border-[#262c3b] rounded-2xl shadow-2xl p-2.5 text-xs text-[#d0d6e0] space-y-3">
+                  <div className="px-2 py-1 text-[11px] font-bold text-white border-b border-white/5 flex items-center justify-between">
+                    <span>Categorized Applications</span>
+                    <span className="text-[10px] text-[#ff69b4] font-mono font-bold">{APPS.length} Apps</span>
+                  </div>
+
+                  {APP_CATEGORIES.map((cat) => {
+                    const catApps = APPS.filter((a) => a.category === cat.name);
+                    return (
+                      <div key={cat.id} className="space-y-1">
+                        {/* CATEGORY LABEL ON TOP */}
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cat.color }} />
+                          <span style={{ color: cat.color }}>{cat.name}</span>
+                          <span className="text-slate-500 font-mono text-[9px]">({catApps.length})</span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-0.5">
+                          {catApps.map((app) => (
+                            <button
+                              key={app.id}
+                              onClick={() => {
+                                setOpenMenu(null);
+                                openApp(app.id);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/5 hover:text-white flex items-center justify-between group transition-colors cursor-pointer"
+                            >
+                              <span className="font-medium text-slate-200 group-hover:text-white truncate">
+                                {app.title}
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-500 group-hover:text-[#ff69b4]">
+                                {app.shortTitle}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* FILE MENU */}
           <div className="relative zmail-menu-item">
             <button

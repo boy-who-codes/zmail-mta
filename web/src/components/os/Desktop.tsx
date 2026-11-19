@@ -1,8 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useWindowManager, WallpaperId } from "../../context/WindowManagerContext";
-import { APPS } from "../../data/mockData";
+import { APPS, APP_CATEGORIES } from "../../data/mockData";
 import { TopMenuBar } from "./TopMenuBar";
 import { Dock } from "./Dock";
 import { WindowFrame } from "./WindowFrame";
@@ -28,6 +28,10 @@ import {
   FileCode2,
   Mail,
   BookOpen,
+  ShieldCheck,
+  LayoutGrid,
+  FolderTree,
+  Sparkles,
 } from "lucide-react";
 
 // App component imports
@@ -97,6 +101,10 @@ const ICON_MAP: Record<string, React.ElementType> = {
   FileCode2,
   Mail,
   BookOpen,
+  ShieldCheck,
+  LayoutGrid,
+  FolderTree,
+  Sparkles,
 };
 
 const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: React.ReactNode }> = {
@@ -143,11 +151,19 @@ const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: Rea
 
 export const Desktop: React.FC = () => {
   const { windows, openApp, wallpaper, accessibility, isLocked } = useWindowManager();
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [desktopViewMode, setDesktopViewMode] = useState<"sections" | "compact">("sections");
 
   const currentWp = WALLPAPER_PRESETS[wallpaper] || WALLPAPER_PRESETS.obsidian;
 
   const contrastClass = accessibility.highContrast ? "contrast-110 brightness-105" : "";
   const motionClass = accessibility.reducedMotion ? "[*]:transition-none [*]:animation-none" : "";
+
+  // Categories to render based on selection filter
+  const displayedCategories =
+    selectedCategory === "all"
+      ? APP_CATEGORIES
+      : APP_CATEGORIES.filter((c) => c.id === selectedCategory);
 
   return (
     <div
@@ -169,37 +185,235 @@ export const Desktop: React.FC = () => {
         <TopMenuBar />
 
         {/* Desktop Workspace (Window Container & Desktop Icons) */}
-        <div className="relative flex-1 w-full h-full overflow-hidden">
-          {/* Desktop Icons Grid (Auto-wrapping columns as screen size/height changes) */}
-          <div className="absolute top-3 sm:top-4 left-3 sm:left-4 flex flex-col flex-wrap max-h-[calc(100vh-100px)] sm:max-h-[calc(100vh-120px)] gap-1.5 sm:gap-2.5 z-0 pointer-events-auto content-start">
-            {APPS.map((app) => {
-              const Icon = ICON_MAP[app.iconName] || Server;
+        <div className="relative flex-1 w-full h-full overflow-hidden flex flex-col">
+          {/* Top Category Filter & View Mode Bar */}
+          <div className="z-10 px-4 py-2 flex items-center justify-between gap-3 flex-wrap pointer-events-auto bg-black/25 backdrop-blur-sm border-b border-white/5">
+            {/* Category Selector Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+              <button
+                onClick={() => setSelectedCategory("all")}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  selectedCategory === "all"
+                    ? "bg-[#ff69b4] text-black shadow-md shadow-[#ff69b4]/25 scale-102"
+                    : "bg-[#14151a]/80 hover:bg-[#1f2028] text-slate-300 border border-[#23252e]"
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>All Apps</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${selectedCategory === "all" ? "bg-black/20 text-black font-bold" : "bg-white/10 text-slate-400"}`}>
+                  {APPS.length}
+                </span>
+              </button>
+
+              {APP_CATEGORIES.map((cat) => {
+                const count = APPS.filter((a) => a.category === cat.name).length;
+                const isSelected = selectedCategory === cat.id;
+                const CatIcon = ICON_MAP[cat.iconName] || Server;
+
+                return (
+                  <button
+                    key={cat.id}
+                    onClick={() => setSelectedCategory(cat.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
+                      isSelected
+                        ? "text-black shadow-md scale-102 font-bold"
+                        : "bg-[#14151a]/80 hover:bg-[#1f2028] text-slate-300 border border-[#23252e]"
+                    }`}
+                    style={
+                      isSelected
+                        ? { backgroundColor: cat.color, boxShadow: `0 4px 14px ${cat.color}40` }
+                        : {}
+                    }
+                  >
+                    <CatIcon className="w-3.5 h-3.5" style={{ color: isSelected ? "#000" : cat.color }} />
+                    <span>{cat.shortLabel}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        isSelected ? "bg-black/20 text-black font-bold" : "bg-white/10 text-slate-400"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* View Mode Switcher */}
+            <div className="flex items-center gap-1 bg-[#14151a]/80 border border-[#23252e] rounded-lg p-0.5 text-xs">
+              <button
+                onClick={() => setDesktopViewMode("sections")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                  desktopViewMode === "sections"
+                    ? "bg-[#23252e] text-white font-bold"
+                    : "text-slate-400 hover:text-white"
+                }`}
+                title="Categorized groups with labels on top"
+              >
+                <FolderTree className="w-3 h-3 text-[#ff69b4]" />
+                <span className="hidden sm:inline">Categorized</span>
+              </button>
+              <button
+                onClick={() => setDesktopViewMode("compact")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                  desktopViewMode === "compact"
+                    ? "bg-[#23252e] text-white font-bold"
+                    : "text-slate-400 hover:text-white"
+                }`}
+                title="Classic desktop icon grid"
+              >
+                <LayoutGrid className="w-3 h-3 text-[#3b9eff]" />
+                <span className="hidden sm:inline">Compact Grid</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Desktop Canvas View */}
+          <div className="relative flex-1 w-full h-full overflow-y-auto p-4 sm:p-6 pb-28">
+            {desktopViewMode === "sections" ? (
+              /* CATEGORIZED SECTIONS VIEW (WITH PROMINENT TOP LABELS) */
+              <div className="space-y-6 max-w-7xl mx-auto pointer-events-auto">
+                {displayedCategories.map((cat) => {
+                  const categoryApps = APPS.filter((a) => a.category === cat.name);
+                  if (categoryApps.length === 0) return null;
+                  const CatIcon = ICON_MAP[cat.iconName] || Server;
+
+                  return (
+                    <div
+                      key={cat.id}
+                      className="rounded-2xl bg-[#0c0d12]/75 backdrop-blur-md border border-[#1f222e] p-4 sm:p-5 shadow-xl transition-all hover:border-[#2d3142]"
+                    >
+                      {/* TOP CATEGORY LABEL STRIP */}
+                      <div className="flex items-center justify-between pb-3.5 mb-3.5 border-b border-white/5">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className="w-7 h-7 rounded-lg flex items-center justify-center shadow-sm"
+                            style={{ backgroundColor: `${cat.color}20`, border: `1px solid ${cat.color}50` }}
+                          >
+                            <CatIcon className="w-4 h-4" style={{ color: cat.color }} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-white">
+                                {cat.name}
+                              </h3>
+                              <span
+                                className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold"
+                                style={{
+                                  backgroundColor: `${cat.color}20`,
+                                  color: cat.color,
+                                  border: `1px solid ${cat.color}40`,
+                                }}
+                              >
+                                {categoryApps.length} {categoryApps.length === 1 ? "App" : "Apps"}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5 hidden sm:block">
+                              {cat.description}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* APPS GRID UNDER THIS CATEGORY */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                        {categoryApps.map((app) => {
+                          const Icon = ICON_MAP[app.iconName] || Server;
+                          const openInstance = windows.find((w) => w.appId === app.id);
+                          const isRunning = !!openInstance && !openInstance.isMinimized;
+
+                          return (
+                            <button
+                              key={app.id}
+                              onClick={() => openApp(app.id)}
+                              className="group p-3 rounded-xl bg-[#13151c]/90 hover:bg-[#1a1c26] border border-[#232736] hover:border-[#ff69b4]/50 flex flex-col items-center text-center gap-2 transition-all duration-150 cursor-pointer shadow-sm hover:shadow-lg active:scale-95"
+                            >
+                              <div className="relative">
+                                <div
+                                  className="w-12 h-12 rounded-xl flex items-center justify-center transition-transform group-hover:scale-105"
+                                  style={{
+                                    backgroundColor: `${cat.color}15`,
+                                    border: `1px solid ${cat.color}35`,
+                                  }}
+                                >
+                                  <Icon
+                                    className="w-6 h-6 transition-colors group-hover:text-white"
+                                    style={{ color: cat.color }}
+                                  />
+                                </div>
+                                {isRunning && (
+                                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#27a644] opacity-75" />
+                                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#27a644]" />
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="w-full">
+                                <div className="text-xs font-bold text-white group-hover:text-[#ff69b4] transition-colors truncate">
+                                  {app.shortTitle}
+                                </div>
+                                <div className="text-[10px] text-slate-400 truncate line-clamp-1 mt-0.5">
+                                  {app.description}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* COMPACT GRID VIEW (WITH CATEGORY BADGES) */
+              <div className="flex flex-col flex-wrap max-h-[calc(100vh-140px)] gap-2 z-0 pointer-events-auto content-start">
+                {APPS.map((app) => {
+                  const Icon = ICON_MAP[app.iconName] || Server;
+                  const cat = APP_CATEGORIES.find((c) => c.name === app.category);
+                  const openInstance = windows.find((w) => w.appId === app.id);
+                  const isRunning = !!openInstance && !openInstance.isMinimized;
+
+                  return (
+                    <button
+                      key={app.id}
+                      onClick={() => openApp(app.id)}
+                      className="w-20 p-2 rounded-xl flex flex-col items-center gap-1 text-center group hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <div className="relative w-11 h-11 rounded-xl bg-[#0f1011] border border-[#23252a] group-hover:border-[#ff69b4]/50 shadow-md flex items-center justify-center transition-transform group-hover:scale-105 flex-shrink-0">
+                        <Icon className="w-5 h-5 text-[#d0d6e0] group-hover:text-[#ff69b4] transition-colors" />
+                        {isRunning && (
+                          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#27a644] ring-2 ring-black" />
+                        )}
+                      </div>
+                      <span className="text-[10px] text-[#d0d6e0] font-medium leading-tight line-clamp-2 drop-shadow-md">
+                        {app.shortTitle}
+                      </span>
+                      <span
+                        className="text-[8px] font-mono px-1 py-0.2 rounded font-semibold"
+                        style={{
+                          backgroundColor: `${cat?.color || "#fff"}15`,
+                          color: cat?.color || "#fff",
+                        }}
+                      >
+                        {cat?.shortLabel || "App"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Windows Rendering Layer */}
+            {windows.map((win) => {
+              const AppComponent = APP_COMPONENT_MAP[win.appId];
               return (
-                <button
-                  key={app.id}
-                  onClick={() => openApp(app.id)}
-                  className="w-16 sm:w-18 md:w-20 p-1 sm:p-1.5 md:p-2 rounded-xl flex flex-col items-center gap-1 sm:gap-1.5 text-center group hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
-                >
-                  <div className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-lg sm:rounded-xl bg-[#0f1011] border border-[#23252a] group-hover:border-[#ff69b4]/50 shadow-md flex items-center justify-center transition-transform group-hover:scale-105 flex-shrink-0">
-                    <Icon className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-[#d0d6e0] group-hover:text-[#ff69b4] transition-colors" />
-                  </div>
-                  <span className="text-[10px] sm:text-[11px] text-[#d0d6e0] font-medium leading-tight line-clamp-2 drop-shadow-md max-w-[64px] sm:max-w-[76px]">
-                    {app.shortTitle}
-                  </span>
-                </button>
+                <WindowFrame key={win.id} instance={win}>
+                  {AppComponent ? <AppComponent /> : <div>App not found</div>}
+                </WindowFrame>
               );
             })}
           </div>
-
-          {/* Windows Rendering */}
-          {windows.map((win) => {
-            const AppComponent = APP_COMPONENT_MAP[win.appId];
-            return (
-              <WindowFrame key={win.id} instance={win}>
-                {AppComponent ? <AppComponent /> : <div>App not found</div>}
-              </WindowFrame>
-            );
-          })}
         </div>
 
         {/* Bottom Dock */}

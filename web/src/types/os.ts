@@ -139,12 +139,23 @@ export interface InboundStats {
   auto_suppressed_complaints: number;
 }
 
+export type AppCategoryName =
+  | "Outreach & Sending"
+  | "Deliverability & Reputation"
+  | "Domains & Network"
+  | "Monitoring & Queues"
+  | "System & Administration"
+  | "Delivery"
+  | "Network"
+  | "Observability"
+  | "System";
+
 export interface AppDefinition {
   id: AppId;
   title: string;
   shortTitle: string;
   iconName: string;
-  category: "Delivery" | "Network" | "Observability" | "System";
+  category: AppCategoryName;
   defaultWidth: number;
   defaultHeight: number;
   minWidth?: number;
