@@ -53,77 +53,8 @@ export interface Contact {
   lastActivity: string;
 }
 
-const INITIAL_CONTACTS: Contact[] = [
-  {
-    id: "ct-1",
-    email: "sarah.connor@cyberdyne.io",
-    firstName: "Sarah",
-    lastName: "Connor",
-    company: "Cyberdyne Systems",
-    stage: "Customer",
-    list: "Enterprise Tier",
-    deliverabilityScore: 99,
-    lastActivity: "Opened 2h ago",
-  },
-  {
-    id: "ct-2",
-    email: "elena.rostova@vertexdata.com",
-    firstName: "Elena",
-    lastName: "Rostova",
-    company: "Vertex Data Corp",
-    stage: "Demo Booked",
-    list: "Q4 High-Touch",
-    deliverabilityScore: 97,
-    lastActivity: "Clicked 18m ago",
-  },
-  {
-    id: "ct-3",
-    email: "marcus.vance@solarisinfra.net",
-    firstName: "Marcus",
-    lastName: "Vance",
-    company: "Solaris Infrastructure",
-    stage: "Customer",
-    list: "Enterprise Tier",
-    deliverabilityScore: 100,
-    lastActivity: "Sent 1d ago",
-  },
-  {
-    id: "ct-4",
-    email: "dev.team@hyperioncloud.tech",
-    firstName: "Hyperion",
-    lastName: "DevOps",
-    company: "Hyperion Cloud",
-    stage: "Lead",
-    list: "Developer Self-Serve",
-    deliverabilityScore: 92,
-    lastActivity: "Subscribed 3d ago",
-  },
-  {
-    id: "ct-5",
-    email: "alex.mercer@blackwatch.org",
-    firstName: "Alex",
-    lastName: "Mercer",
-    company: "Blackwatch Labs",
-    stage: "Lead",
-    list: "Developer Self-Serve",
-    deliverabilityScore: 95,
-    lastActivity: "Subscribed 4d ago",
-  },
-  {
-    id: "ct-6",
-    email: "chloe.price@arcadiabay.edu",
-    firstName: "Chloe",
-    lastName: "Price",
-    company: "Blackwell Analytics",
-    stage: "Churned",
-    list: "Inactive Re-engagement",
-    deliverabilityScore: 78,
-    lastActivity: "Bounced 2w ago",
-  },
-];
-
 export const ContactsApp: React.FC = () => {
-  const [contacts, setContacts] = useState<Contact[]>(INITIAL_CONTACTS);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFolder, setSelectedFolder] = useState<string>("All Contacts");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -139,7 +70,7 @@ export const ContactsApp: React.FC = () => {
     try {
       setIsLoading(true);
       const data = await fetchContacts();
-      if (Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         const mapped: Contact[] = data.map((d: any) => {
           const parts = (d.name || "").split(" ");
           return {

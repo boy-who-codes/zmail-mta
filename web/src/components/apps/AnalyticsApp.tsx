@@ -58,21 +58,8 @@ interface AnalyticsData {
   };
 }
 
-// 24-hour mock data points for multi-series line chart
-const HOURLY_TIMELINE = [
-  { hour: "00:00", volume: 120, delivered: 118, opened: 42 },
-  { hour: "02:00", volume: 90, delivered: 89, opened: 28 },
-  { hour: "04:00", volume: 65, delivered: 64, opened: 19 },
-  { hour: "06:00", volume: 240, delivered: 236, opened: 84 },
-  { hour: "08:00", volume: 1120, delivered: 1108, opened: 485 },
-  { hour: "10:00", volume: 2450, delivered: 2420, opened: 1120 },
-  { hour: "12:00", volume: 3100, delivered: 3060, opened: 1480 },
-  { hour: "14:00", volume: 2890, delivered: 2855, opened: 1390 },
-  { hour: "16:00", volume: 2340, delivered: 2310, opened: 1040 },
-  { hour: "18:00", volume: 1650, delivered: 1630, opened: 710 },
-  { hour: "20:00", volume: 980, delivered: 968, opened: 395 },
-  { hour: "22:00", volume: 430, delivered: 424, opened: 160 },
-];
+// 24-hour baseline time labels
+const HOURLY_LABELS = ["00:00", "02:00", "04:00", "06:00", "08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00", "22:00"];
 
 export const AnalyticsApp: React.FC = () => {
   const [timeRange, setTimeRange] = useState<"1h" | "24h" | "7d" | "30d" | "custom">("24h");
@@ -141,39 +128,7 @@ export const AnalyticsApp: React.FC = () => {
       const data = await fetchAnalytics();
       setAnalytics(data);
     } catch {
-      // Fallback fallback mock if backend is warming up
-      setAnalytics({
-        delivery_success_rate: 99.4,
-        throughput_msg_sec: 14.8,
-        bounce_rate: 0.6,
-        open_rate: 46.2,
-        inbox_rate: 94.8,
-        spam_rate: 4.6,
-        average_latency_ms: 38,
-        total_sent_today: 48250,
-        delivered_count: 47960,
-        inbox_count: 45466,
-        spam_count: 2206,
-        bounced_count: 290,
-        opened_count: 22157,
-        hourly_distribution: [120, 90, 65, 240, 1120, 2450, 3100, 2890, 2340, 1650, 980, 430],
-        provider_breakdown: {
-          "Google Workspace / Gmail": 23160,
-          "Microsoft 365 / Outlook": 14950,
-          "Yahoo / AOL": 5790,
-          "Apple iCloud": 2895,
-          "Corporate / Other": 1455,
-        },
-        outcomes: {
-          delivered: 47960,
-          inbox: 45466,
-          spam: 2206,
-          waiting_to_send: 14,
-          delayed: 8,
-          address_not_found: 290,
-          opened: 22157,
-        },
-      });
+      setAnalytics(null);
     } finally {
       setIsLoading(false);
     }
@@ -183,19 +138,19 @@ export const AnalyticsApp: React.FC = () => {
     loadAnalytics();
   }, [timeRange]);
 
-  const totalSent = analytics?.total_sent_today ?? 48250;
-  const successRate = analytics?.delivery_success_rate ?? 99.4;
-  const bounceRate = analytics?.bounce_rate ?? 0.6;
-  const latency = analytics?.average_latency_ms ?? 38;
-  const openRate = analytics?.open_rate ?? 46.2;
-  const inboxRate = analytics?.inbox_rate ?? 94.8;
-  const spamRate = analytics?.spam_rate ?? 4.6;
+  const totalSent = analytics?.total_sent_today ?? 0;
+  const successRate = analytics?.delivery_success_rate ?? 0;
+  const bounceRate = analytics?.bounce_rate ?? 0;
+  const latency = analytics?.average_latency_ms ?? 0;
+  const openRate = analytics?.open_rate ?? 0;
+  const inboxRate = analytics?.inbox_rate ?? 0;
+  const spamRate = analytics?.spam_rate ?? 0;
 
-  const deliveredCount = analytics?.delivered_count ?? 47960;
-  const inboxCount = analytics?.inbox_count ?? 45466;
-  const spamCount = analytics?.spam_count ?? 2206;
-  const bouncedCount = analytics?.bounced_count ?? 290;
-  const openedCount = analytics?.opened_count ?? 22157;
+  const deliveredCount = analytics?.delivered_count ?? 0;
+  const inboxCount = analytics?.inbox_count ?? 0;
+  const spamCount = analytics?.spam_count ?? 0;
+  const bouncedCount = analytics?.bounced_count ?? 0;
+  const openedCount = analytics?.opened_count ?? 0;
 
   // Multi-Series Line Chart Dimensions
   const lineSvgWidth = 720;
@@ -205,31 +160,65 @@ export const AnalyticsApp: React.FC = () => {
   const chartW = lineSvgWidth - paddingX * 2;
   const chartH = lineSvgHeight - paddingY * 2;
 
-  const maxVal = Math.max(...HOURLY_TIMELINE.map((d) => d.volume), 3500);
+  const timelineData = React.useMemo(() => {
+    if (!analytics || analytics.total_sent_today === 0) {
+      return HOURLY_LABELS.map((h) => ({ hour: h, volume: 0, delivered: 0, opened: 0 }));
+    }
+    const dist = analytics.hourly_distribution || [];
+    return HOURLY_LABELS.map((h, i) => {
+      const vol = dist[i] || 0;
+      const del = Math.round(vol * ((analytics.delivery_success_rate || 0) / 100));
+      const op = Math.round(del * ((analytics.open_rate || 0) / 100));
+      return { hour: h, volume: vol, delivered: del, opened: op };
+    });
+  }, [analytics]);
 
-  const getX = (index: number) => paddingX + (index / (HOURLY_TIMELINE.length - 1)) * chartW;
+  const maxVal = Math.max(...timelineData.map((d) => d.volume), 10);
+
+  const getX = (index: number) => paddingX + (index / (timelineData.length - 1)) * chartW;
   const getY = (val: number) => paddingY + chartH - (val / maxVal) * chartH;
 
-  const volumePoints = HOURLY_TIMELINE.map((d, i) => `${getX(i)},${getY(d.volume)}`).join(" ");
-  const deliveredPoints = HOURLY_TIMELINE.map((d, i) => `${getX(i)},${getY(d.delivered)}`).join(" ");
-  const openedPoints = HOURLY_TIMELINE.map((d, i) => `${getX(i)},${getY(d.opened)}`).join(" ");
+  const volumePoints = timelineData.map((d, i) => `${getX(i)},${getY(d.volume)}`).join(" ");
+  const deliveredPoints = timelineData.map((d, i) => `${getX(i)},${getY(d.delivered)}`).join(" ");
+  const openedPoints = timelineData.map((d, i) => `${getX(i)},${getY(d.opened)}`).join(" ");
 
   // Pie / Donut Chart 1: Delivery Outcomes Breakdown
-  const outcomesSlices = [
-    { label: "Inbox Delivery", count: inboxCount, color: "#3b9eff", pct: 94.2 },
-    { label: "Spam Placement", count: spamCount, color: "#f59e0b", pct: 4.6 },
-    { label: "Hard Bounced", count: bouncedCount, color: "#ef4444", pct: 0.6 },
-    { label: "Queued / Pending", count: 280, color: "#8a8f98", pct: 0.6 },
-  ];
+  const outcomesSlices = React.useMemo(() => {
+    if (totalSent === 0) {
+      return [
+        { label: "Inbox Delivery", count: 0, color: "#3b9eff", pct: 0 },
+        { label: "Spam Placement", count: 0, color: "#f59e0b", pct: 0 },
+        { label: "Hard Bounced", count: 0, color: "#ef4444", pct: 0 },
+        { label: "Queued / Pending", count: 0, color: "#8a8f98", pct: 0 },
+      ];
+    }
+    const queuedCount = analytics?.outcomes?.waiting_to_send ?? 0;
+    return [
+      { label: "Inbox Delivery", count: inboxCount, color: "#3b9eff", pct: Math.round((inboxCount / totalSent) * 1000) / 10 },
+      { label: "Spam Placement", count: spamCount, color: "#f59e0b", pct: Math.round((spamCount / totalSent) * 1000) / 10 },
+      { label: "Hard Bounced", count: bouncedCount, color: "#ef4444", pct: Math.round((bouncedCount / totalSent) * 1000) / 10 },
+      { label: "Queued / Pending", count: queuedCount, color: "#8a8f98", pct: Math.round((queuedCount / totalSent) * 1000) / 10 },
+    ];
+  }, [totalSent, inboxCount, spamCount, bouncedCount, analytics]);
 
   // Pie / Donut Chart 2: Mailbox Providers (ISPs)
-  const ispSlices = [
-    { label: "Google Workspace / Gmail", count: 23160, color: "#4285f4", pct: 48.0 },
-    { label: "Microsoft 365 / Outlook", count: 14950, color: "#00a4ef", pct: 31.0 },
-    { label: "Yahoo / AOL", count: 5790, color: "#720e9e", pct: 12.0 },
-    { label: "Apple iCloud", count: 2895, color: "#a2aaad", pct: 6.0 },
-    { label: "Corporate / Other", count: 1455, color: "#ff69b4", pct: 3.0 },
-  ];
+  const ispSlices = React.useMemo(() => {
+    if (!analytics || !analytics.provider_breakdown || Object.keys(analytics.provider_breakdown).length === 0 || totalSent === 0) {
+      return [
+        { label: "Google Workspace / Gmail", count: 0, color: "#4285f4", pct: 0 },
+        { label: "Microsoft 365 / Outlook", count: 0, color: "#00a4ef", pct: 0 },
+        { label: "Yahoo / AOL", count: 0, color: "#720e9e", pct: 0 },
+        { label: "Apple iCloud", count: 0, color: "#a2aaad", pct: 0 },
+      ];
+    }
+    const colors = ["#4285f4", "#00a4ef", "#720e9e", "#a2aaad", "#ff69b4"];
+    return Object.entries(analytics.provider_breakdown).map(([label, count], idx) => ({
+      label,
+      count,
+      color: colors[idx % colors.length],
+      pct: totalSent > 0 ? Math.round((count / totalSent) * 1000) / 10 : 0,
+    }));
+  }, [analytics, totalSent]);
 
   // Helper to build SVG Donut Path
   const buildDonutArcs = (slices: { label: string; count: number; color: string; pct: number }[]) => {
@@ -508,7 +497,7 @@ export const AnalyticsApp: React.FC = () => {
                 <>
                   <polygon
                     points={`${getX(0)},${getY(0)} ${volumePoints} ${getX(
-                      HOURLY_TIMELINE.length - 1
+                      timelineData.length - 1
                     )},${getY(0)}`}
                     fill="url(#volumeGrad)"
                   />
@@ -551,7 +540,7 @@ export const AnalyticsApp: React.FC = () => {
               )}
 
               {/* Data points & Interactive hover circles */}
-              {HOURLY_TIMELINE.map((d, i) => (
+              {timelineData.map((d, i) => (
                 <g key={i}>
                   {showVolume && (
                     <circle
@@ -582,20 +571,20 @@ export const AnalyticsApp: React.FC = () => {
             {/* Hover Tooltip Overlay */}
             {hoveredPoint !== null && (
               <div
-                style={{ left: `${(hoveredPoint / (HOURLY_TIMELINE.length - 1)) * 80 + 10}%` }}
+                style={{ left: `${(hoveredPoint / (timelineData.length - 1)) * 80 + 10}%` }}
                 className="absolute top-4 pointer-events-none p-2 rounded bg-[#18191d] border border-[#2b2d33] shadow-xl text-[11px] space-y-1"
               >
                 <div className="font-bold text-[#f7f8f8]">
-                  Hour: {HOURLY_TIMELINE[hoveredPoint].hour}
+                  Hour: {timelineData[hoveredPoint].hour}
                 </div>
                 <div className="text-[#ff69b4]">
-                  Volume: {HOURLY_TIMELINE[hoveredPoint].volume.toLocaleString()}
+                  Volume: {timelineData[hoveredPoint].volume.toLocaleString()}
                 </div>
                 <div className="text-[#27a644]">
-                  Delivered: {HOURLY_TIMELINE[hoveredPoint].delivered.toLocaleString()}
+                  Delivered: {timelineData[hoveredPoint].delivered.toLocaleString()}
                 </div>
                 <div className="text-[#3b9eff]">
-                  Opened: {HOURLY_TIMELINE[hoveredPoint].opened.toLocaleString()}
+                  Opened: {timelineData[hoveredPoint].opened.toLocaleString()}
                 </div>
               </div>
             )}

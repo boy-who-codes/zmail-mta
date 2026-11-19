@@ -148,6 +148,7 @@ func NewStore(dataFile string) *Store {
 	// Initialize standard enterprise warmup plan presets
 	s.initWarmupPlansLocked()
 	s.initDefaultPlaybooksLocked()
+	s.initDefaultCampaignsLocked()
 	s.initDefaultMailboxesLocked()
 	s.initDefaultSMTPCredentialsLocked()
 
@@ -233,6 +234,9 @@ func NewStore(dataFile string) *Store {
 			s.inboundMessages = state.InboundMessages
 			s.bounces = state.Bounces
 			s.messages = state.Messages
+			if len(s.campaigns) == 0 {
+				s.initDefaultCampaignsLocked()
+			}
 		}
 	}
 
@@ -2146,6 +2150,164 @@ func (s *Store) GetBounces(limit int) []models.BounceRecord {
 // =========================================================================
 // PHASE 4: AUTOMATED WARMUP SCHEDULER & MULTI-SPEED THROTTLE DAGS
 // =========================================================================
+
+func (s *Store) initDefaultCampaignsLocked() {
+	if len(s.campaigns) > 0 {
+		return
+	}
+	now := time.Now().UTC()
+	c1 := models.Campaign{
+		ID:             "cmp-premade-cold-b2b",
+		Name:           "[Premade Automation] Multi-Touch B2B Cold Outreach",
+		Subject:        "Quick question regarding {{company}} infrastructure",
+		FromName:       "Outreach Desk",
+		FromEmail:      "outreach@mailops.local",
+		CategoryTag:    "Automation",
+		Priority:       "normal",
+		Audience:       "B2B Outbound Leads",
+		RecipientCount: 0,
+		Status:         "ready",
+		SentCount:      0,
+		OpenRate:       0,
+		ClickRate:      0,
+		CreatedAt:      now,
+		BodyHTML:       "<p>Hi {{first_name}},</p><p>I noticed {{company}} has been scaling your messaging architecture recently. We engineered an automated high-throughput mail delivery platform with native DKIM cryptographic signing and automated ISP throttling.</p><p>Would you be open to a 10-minute briefing this Thursday?</p><p>Best regards,<br>Outreach Desk</p>",
+		BodyPreview:    "Hi {{first_name}}, I noticed {{company}} has been scaling your messaging architecture recently...",
+		Steps: []models.CampaignStep{
+			{
+				ID:               "step-1",
+				StepNumber:       1,
+				Title:            "Step 1: Benchmark Outreach",
+				Subject:          "Quick question regarding {{company}} infrastructure",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>I noticed {{company}} has been scaling your messaging architecture recently. We engineered an automated high-throughput mail delivery platform with native DKIM cryptographic signing and automated ISP throttling.</p><p>Would you be open to a 10-minute briefing this Thursday?</p><p>Best regards,<br>Outreach Desk</p>",
+				DelayDays:        0,
+				TriggerCondition: "immediate",
+				IsThreadedReply:  false,
+				CreatedAt:        now,
+			},
+			{
+				ID:               "step-2",
+				StepNumber:       2,
+				Title:            "Step 2: Architecture Follow-Up",
+				Subject:          "Re: Quick question regarding {{company}} infrastructure",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>Following up on my previous note. Did you get a chance to review the deliverability architecture?</p><p>Happy to send over a 2-page brief if that is easier.</p>",
+				DelayDays:        3,
+				TriggerCondition: "no_reply",
+				IsThreadedReply:  true,
+				CreatedAt:        now,
+			},
+			{
+				ID:               "step-3",
+				StepNumber:       3,
+				Title:            "Step 3: Polite Breakup & Resource Share",
+				Subject:          "Re: Quick question regarding {{company}} infrastructure",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>I know you're busy! If now isn't the right time to optimize your sender reputation, no worries at all. Feel free to reach back out whenever you are ready.</p>",
+				DelayDays:        4,
+				TriggerCondition: "no_reply",
+				IsThreadedReply:  true,
+				CreatedAt:        now,
+			},
+		},
+	}
+	c2 := models.Campaign{
+		ID:             "cmp-premade-saas-onboarding",
+		Name:           "[Premade Automation] SaaS Product Activation & Onboarding",
+		Subject:        "Welcome to your new workspace — 3 quick setup steps",
+		FromName:       "Product Team",
+		FromEmail:      "welcome@mailops.local",
+		CategoryTag:    "Lifecycle",
+		Priority:       "normal",
+		Audience:       "New Registered Users",
+		RecipientCount: 0,
+		Status:         "ready",
+		SentCount:      0,
+		OpenRate:       0,
+		ClickRate:      0,
+		CreatedAt:      now,
+		BodyHTML:       "<p>Hi {{first_name}},</p><p>Welcome aboard! Your new high-performance messaging workspace is ready.</p><p>Here are 3 critical setup steps to guarantee 100% inbox deliverability:</p><ol><li>Verify your sending domain (SPF, DKIM, DMARC)</li><li>Configure your sender mailbox</li><li>Run a 1-click deliverability preflight test</li></ol><p>Let us know if you hit any roadblocks!</p>",
+		BodyPreview:    "Hi {{first_name}}, Welcome aboard! Your new high-performance messaging workspace is ready...",
+		Steps: []models.CampaignStep{
+			{
+				ID:               "step-1",
+				StepNumber:       1,
+				Title:            "Step 1: Account Activation",
+				Subject:          "Welcome to your new workspace — 3 quick setup steps",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>Welcome aboard! Your new high-performance messaging workspace is ready.</p><p>Here are 3 critical setup steps to guarantee 100% inbox deliverability:</p><ol><li>Verify your sending domain (SPF, DKIM, DMARC)</li><li>Configure your sender mailbox</li><li>Run a 1-click deliverability preflight test</li></ol><p>Let us know if you hit any roadblocks!</p>",
+				DelayDays:        0,
+				TriggerCondition: "immediate",
+				IsThreadedReply:  false,
+				CreatedAt:        now,
+			},
+			{
+				ID:               "step-2",
+				StepNumber:       2,
+				Title:            "Step 2: Recommended DNS Best Practices",
+				Subject:          "Day 2: Recommended DNS & Security Best Practices",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>To protect your brand against spoofing, ensure your DMARC policy is set to reject (p=reject) once your DKIM and SPF alignment are confirmed.</p>",
+				DelayDays:        2,
+				TriggerCondition: "always",
+				IsThreadedReply:  true,
+				CreatedAt:        now,
+			},
+			{
+				ID:               "step-3",
+				StepNumber:       3,
+				Title:            "Step 3: Office Hours Invitation",
+				Subject:          "Office Hours: Join our weekly deliverability clinic",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>Every Tuesday at 10 AM, our deliverability architects host live teardowns and optimization reviews. Click below to reserve a seat.</p>",
+				DelayDays:        5,
+				TriggerCondition: "always",
+				IsThreadedReply:  true,
+				CreatedAt:        now,
+			},
+		},
+	}
+	c3 := models.Campaign{
+		ID:             "cmp-premade-list-hygiene",
+		Name:           "[Premade Automation] Inactive Subscriber Win-Back & Hygiene",
+		Subject:        "Should we keep your account active?",
+		FromName:       "Success Team",
+		FromEmail:      "updates@mailops.local",
+		CategoryTag:    "Hygiene",
+		Priority:       "bulk",
+		Audience:       "Inactive Contacts (60+ Days)",
+		RecipientCount: 0,
+		Status:         "ready",
+		SentCount:      0,
+		OpenRate:       0,
+		ClickRate:      0,
+		CreatedAt:      now,
+		BodyHTML:       "<p>Hi {{first_name}},</p><p>We noticed you haven't opened our emails in a while. To respect your inbox and keep our community clean, we will automatically pause your subscription if you no longer need our updates.</p><p>Click below if you would like to stay on the list:</p><p><a href=\"{{confirm_url}}\">Yes, keep me subscribed</a></p>",
+		BodyPreview:    "Hi {{first_name}}, We noticed you haven't opened our emails in a while...",
+		Steps: []models.CampaignStep{
+			{
+				ID:               "step-1",
+				StepNumber:       1,
+				Title:            "Step 1: Inactivity Warning",
+				Subject:          "Should we keep your account active?",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>We noticed you haven't opened our emails in a while. To respect your inbox and keep our community clean, we will automatically pause your subscription if you no longer need our updates.</p><p>Click below if you would like to stay on the list:</p><p><a href=\"{{confirm_url}}\">Yes, keep me subscribed</a></p>",
+				DelayDays:        0,
+				TriggerCondition: "immediate",
+				IsThreadedReply:  false,
+				CreatedAt:        now,
+			},
+			{
+				ID:               "step-2",
+				StepNumber:       2,
+				Title:            "Step 2: Final Notice & Automatic Unsubscribe",
+				Subject:          "Final Notice: Removing inactive subscription",
+				BodyHTML:         "<p>Hi {{first_name}},</p><p>This is our final confirmation. We are removing this address from our broadcast sequence. Thank you for being with us!</p>",
+				DelayDays:        7,
+				TriggerCondition: "no_open",
+				IsThreadedReply:  true,
+				CreatedAt:        now,
+			},
+		},
+	}
+	s.campaigns[c1.ID] = c1
+	s.campaigns[c2.ID] = c2
+	s.campaigns[c3.ID] = c3
+}
 
 func (s *Store) initWarmupPlansLocked() {
 	// 1. Standard 30-Day Plan
