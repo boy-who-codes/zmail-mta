@@ -64,64 +64,11 @@ var conversationTemplates = []conversationTopicTemplate{
 }
 
 func init() {
-	// Seed initial simulated conversations if empty
-	seedInitialThreads()
+	// Clean production initialization
 }
 
 func seedInitialThreads() {
-	now := time.Now().UTC()
-	senders := []string{"sarah@growth.zmail.local", "alex@growth.zmail.local", "team@outreach.zmail.local"}
-	peers := []string{"david@cloudpeers.net", "elena@vortexscale.io", "marcus@devscale.org", "rachel@aicorelabs.com"}
-
-	for i, tpl := range conversationTemplates {
-		sMailbox := senders[i%len(senders)]
-		pMailbox := peers[i%len(peers)]
-		threadID := fmt.Sprintf("thread-ai-%d", i+1)
-
-		msgs := []models.AIWarmupMessage{
-			{
-				ID:        fmt.Sprintf("msg-%s-1", threadID),
-				From:      sMailbox,
-				To:        pMailbox,
-				Subject:   tpl.Subject,
-				Body:      tpl.Prompt1,
-				SentAt:    now.Add(time.Duration(-(4-i)*35) * time.Minute),
-				IsReply:   false,
-			},
-			{
-				ID:        fmt.Sprintf("msg-%s-2", threadID),
-				From:      pMailbox,
-				To:        sMailbox,
-				Subject:   "Re: " + tpl.Subject,
-				Body:      tpl.Reply1,
-				SentAt:    now.Add(time.Duration(-(4-i)*20) * time.Minute),
-				IsReply:   true,
-			},
-			{
-				ID:        fmt.Sprintf("msg-%s-3", threadID),
-				From:      sMailbox,
-				To:        pMailbox,
-				Subject:   "Re: " + tpl.Subject,
-				Body:      tpl.Reply2,
-				SentAt:    now.Add(time.Duration(-(4-i)*5) * time.Minute),
-				IsReply:   true,
-			},
-		}
-
-		aiWarmupThreads = append(aiWarmupThreads, models.AIWarmupThread{
-			ID:             threadID,
-			SenderMailbox:  sMailbox,
-			PeerMailbox:    pMailbox,
-			Subject:        tpl.Subject,
-			Topic:          "Engineering & Architecture",
-			Status:         "starred",
-			InboxPlacement: "primary",
-			TurnsCount:     3,
-			Messages:       msgs,
-			CreatedAt:      now.Add(-2 * time.Hour),
-			UpdatedAt:      now,
-		})
-	}
+	// Clean production initialization - no mock threads
 }
 
 // GetAIWarmupStats returns overall health of the peer network

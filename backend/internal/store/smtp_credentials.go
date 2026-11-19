@@ -12,40 +12,9 @@ import (
 	"mailops.io/backend/internal/models"
 )
 
-// initDefaultSMTPCredentialsLocked seeds initial credentials for Outlook and ESMTP clients if empty
+// initDefaultSMTPCredentialsLocked initializes SMTP credential storage (no mock credentials for production)
 func (s *Store) initDefaultSMTPCredentialsLocked() {
-	if len(s.smtpCredentials) > 0 {
-		return
-	}
-
-	initialCreds := []models.SMTPCredential{
-		{
-			ID:           "smtp-cred-master",
-			Username:     "zmail_master",
-			Password:     "zmail_live_sec_2026",
-			PasswordHash: hashPassword("zmail_live_sec_2026"),
-			Description:  "Primary Outlook / ESMTP Relay Submission User",
-			PoolID:       "default",
-			Enabled:      true,
-			CreatedAt:    time.Now().UTC().Add(-72 * time.Hour),
-			UpdatedAt:    time.Now().UTC(),
-		},
-		{
-			ID:           "smtp-cred-outbound",
-			Username:     "outbound@zmail.local",
-			Password:     "outbound_prod_key_994",
-			PasswordHash: hashPassword("outbound_prod_key_994"),
-			Description:  "Growth & Cold Cadence Outbound Relay",
-			PoolID:       "pool-outbound-tier1",
-			Enabled:      true,
-			CreatedAt:    time.Now().UTC().Add(-48 * time.Hour),
-			UpdatedAt:    time.Now().UTC(),
-		},
-	}
-
-	for _, c := range initialCreds {
-		s.smtpCredentials[c.ID] = c
-	}
+	return
 }
 
 // hashPassword produces a deterministic SHA-256 hash for secure credential storage

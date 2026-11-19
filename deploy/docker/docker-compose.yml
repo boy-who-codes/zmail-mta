@@ -1,4 +1,19 @@
 services:
+  # 0. High-Performance Web & API Gateway (Main Port 80 - No Subports Needed)
+  gateway:
+    container_name: mailops-gateway
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${MAIN_HTTP_PORT:-80}:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - web
+    networks:
+      - mailops-net
+
   # 1. High-Speed Inbound & Outbound MTA Daemon
   kumomta:
     container_name: mailops-mta
@@ -64,10 +79,13 @@ services:
       - "${API_PORT:-8080}:8080"
     volumes:
       - ../../backend/data:/app/data
+      - ../../cred.txt:/app/cred.txt:ro
       - ./policy:/app/policy
       - ./logs:/var/log/kumomta:ro
     environment:
       - PORT=8080
+      - MASTER_ADMIN_USER=${MASTER_ADMIN_USER:-}
+      - MASTER_ADMIN_PASSWORD=${MASTER_ADMIN_PASSWORD:-}
       - PUBLIC_IP=${PUBLIC_IP:-}
       - SMTP_HOSTNAME=${SMTP_HOSTNAME:-}
       - PRIMARY_DOMAIN=${PRIMARY_DOMAIN:-}

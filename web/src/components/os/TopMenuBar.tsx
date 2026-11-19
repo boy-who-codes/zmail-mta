@@ -205,6 +205,28 @@ export const TopMenuBar: React.FC = () => {
                     <Sliders className="w-3.5 h-3.5 text-[#8a8f98]" />
                     <span>System Settings & Access</span>
                   </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      lockScreen();
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-[#1e2333] hover:text-white flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-[#ff69b4]" />
+                    <span>Lock Desktop Session</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setOpenMenu(null);
+                      logout();
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-red-500/10 text-red-400 hover:text-red-300 flex items-center gap-2.5 cursor-pointer font-medium"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-red-400" />
+                    <span>Log Out</span>
+                  </button>
                 </div>
 
                 <div className="px-3.5 py-1.5 bg-[#0e1014] border-t border-[#202535] text-[10px] text-[#62666d] flex items-center justify-between">
@@ -673,17 +695,17 @@ export const TopMenuBar: React.FC = () => {
           )}
         </button>
 
-        {/* User Account / GDM Lock Screen Trigger */}
+        {/* User Account Pill */}
         <div className="relative">
           <button
             onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#14151a] hover:bg-[#1f2028] border border-[#23252e] text-xs transition-all cursor-pointer"
-            title="User Account & Security"
+            title="User Account & Profile"
           >
             {currentUser?.role === "master_admin" ? (
               <>
                 <div className="w-2 h-2 rounded-full bg-[#ff69b4]" />
-                <span className="font-medium text-[#f7f8f8]">zekea.me</span>
+                <span className="font-medium text-[#f7f8f8]">Admin</span>
                 <span className="text-[10px] text-[#ff69b4] bg-[#ff69b4]/10 px-1 rounded font-mono">Master</span>
               </>
             ) : (
@@ -704,7 +726,7 @@ export const TopMenuBar: React.FC = () => {
                   {currentUser?.name || "Master Administrator"}
                 </div>
                 <div className="text-[11px] text-[#8a8f98] font-mono truncate">
-                  {currentUser?.username || "zekea.me"}
+                  {currentUser?.username || "Master Account"}
                 </div>
               </div>
               <button
@@ -715,14 +737,14 @@ export const TopMenuBar: React.FC = () => {
                 className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-white/5 text-[#d0d6e0] hover:text-white flex items-center gap-2 cursor-pointer transition-colors"
               >
                 <Lock className="w-3.5 h-3.5 text-[#ff69b4]" />
-                <span>Lock Screen (GDM)</span>
+                <span>Lock Screen</span>
               </button>
               <button
                 onClick={() => {
                   setIsUserMenuOpen(false);
                   logout();
                 }}
-                className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#ff2047]/10 text-[#8a8f98] hover:text-[#ff2047] flex items-center gap-2 cursor-pointer transition-colors"
+                className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#ff2047]/10 text-red-400 hover:text-red-300 flex items-center gap-2 cursor-pointer transition-colors font-medium"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Log Out</span>
@@ -730,6 +752,25 @@ export const TopMenuBar: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Dedicated 1-Click Lock and Log Out Buttons */}
+        <button
+          onClick={lockScreen}
+          title="Lock Screen"
+          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#14151a] hover:bg-[#1f2028] border border-[#23252e] text-[#d0d6e0] hover:text-white font-medium text-xs transition-all cursor-pointer active:scale-95"
+        >
+          <Lock className="w-3.5 h-3.5 text-[#ff69b4]" />
+          <span className="hidden sm:inline">Lock</span>
+        </button>
+
+        <button
+          onClick={logout}
+          title="Log Out of MailOS"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-400 hover:text-red-300 font-semibold text-xs transition-all cursor-pointer shadow-sm active:scale-95"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span>Log Out</span>
+        </button>
 
         {/* Date and Clock */}
         <div className="flex items-center gap-2 pl-1 font-medium text-[11px] text-[#f7f8f8]">

@@ -541,8 +541,8 @@ type Subaccount struct {
 
 // AuthLoginRequest represents incoming credentials to the GNOME GDM login panel
 type AuthLoginRequest struct {
-	Username string `json:"username"` // "zekea.me" or tenant email
-	Password string `json:"password"` // "zekea@mta#kumo" or tenant password
+	Username string `json:"username"` // Master admin or tenant email
+	Password string `json:"password"` // Account password
 }
 
 // AuthUser represents an authenticated session user (Master Admin or Tenant)

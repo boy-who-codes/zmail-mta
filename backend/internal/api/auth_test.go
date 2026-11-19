@@ -22,9 +22,13 @@ func TestMasterAdminAndTenantAuth(t *testing.T) {
 	st := store.NewStore(tmpDir)
 	server := NewServer(st, nil, nil)
 
+	// Set test environment variables dynamically
+	t.Setenv("MASTER_ADMIN_USER", "testadmin.me")
+	t.Setenv("MASTER_ADMIN_PASSWORD", "testAdminPass!2026")
+
 	// 1. Test Master Admin login with wrong password
 	badReqBody, _ := json.Marshal(models.AuthLoginRequest{
-		Username: "zekea.me",
+		Username: "testadmin.me",
 		Password: "wrongpassword",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(badReqBody))
@@ -34,10 +38,10 @@ func TestMasterAdminAndTenantAuth(t *testing.T) {
 		t.Fatalf("expected 401 on bad password, got %d", rec.Code)
 	}
 
-	// 2. Test Master Admin login with correct credentials: zekea.me / zekea@mta#kumo
+	// 2. Test Master Admin login with correct dynamic credentials
 	goodReqBody, _ := json.Marshal(models.AuthLoginRequest{
-		Username: "zekea.me",
-		Password: "zekea@mta#kumo",
+		Username: "testadmin.me",
+		Password: "testAdminPass!2026",
 	})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(goodReqBody))
 	rec = httptest.NewRecorder()

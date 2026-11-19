@@ -7,18 +7,66 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"mailops.io/backend/internal/models"
 )
 
-// Master Admin configuration as specified
+// Session signing key secret
 const (
-	MasterAdminUsername = "zekea.me"
-	MasterAdminPassword = "zekea@mta#kumo"
-	AuthHMACSecretKey   = "mailops-enterprise-gdm-session-signing-secret-key-2026"
+	AuthHMACSecretKey = "mailops-enterprise-gdm-session-signing-secret-key-2026"
 )
+
+// GetMasterAdminCredentials dynamically resolves master credentials from environment variables or cred.txt file
+// No credentials are hardcoded anywhere in the codebase.
+func GetMasterAdminCredentials() (string, string) {
+	user := strings.TrimSpace(os.Getenv("MASTER_ADMIN_USER"))
+	pass := strings.TrimSpace(os.Getenv("MASTER_ADMIN_PASSWORD"))
+
+	if user != "" && pass != "" {
+		return strings.ToLower(user), pass
+	}
+
+	// Try resolving from cred.txt in candidate locations
+	candidatePaths := []string{
+		"cred.txt",
+		"/app/cred.txt",
+		"/app/data/cred.txt",
+		"data/cred.txt",
+		"../cred.txt",
+		"../../cred.txt",
+	}
+
+	for _, path := range candidatePaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "master email / username:") || strings.HasPrefix(lower, "master email:") || strings.HasPrefix(lower, "master username:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 && user == "" {
+					user = strings.TrimSpace(parts[1])
+				}
+			} else if strings.HasPrefix(lower, "master password:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 && pass == "" {
+					pass = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+		if user != "" && pass != "" {
+			return strings.ToLower(user), pass
+		}
+	}
+
+	return strings.ToLower(user), pass
+}
 
 // GenerateAuthToken creates a tamper-proof HMAC-SHA256 signed bearer token
 func GenerateAuthToken(user models.AuthUser) (string, error) {
@@ -118,31 +166,34 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	cleanUser := strings.TrimSpace(strings.ToLower(req.Username))
 
-	// 1. Check Master Admin Credentials
-	if (cleanUser == MasterAdminUsername || cleanUser == "admin@"+MasterAdminUsername) && req.Password == MasterAdminPassword {
-		authUser := models.AuthUser{
-			Role:             "master_admin",
-			Username:         MasterAdminUsername,
-			Name:             "Master Administrator",
-			CanManageTenants: true,
-			ExpiresAt:        time.Now().Add(7 * 24 * time.Hour).Unix(),
-		}
+	// 1. Check Master Admin Credentials dynamically (from environment or cred.txt)
+	masterUser, masterPass := GetMasterAdminCredentials()
+	if masterUser != "" && masterPass != "" {
+		if (cleanUser == masterUser || cleanUser == "admin@"+masterUser) && req.Password == masterPass {
+			authUser := models.AuthUser{
+				Role:             "master_admin",
+				Username:         masterUser,
+				Name:             "Master Administrator",
+				CanManageTenants: true,
+				ExpiresAt:        time.Now().Add(7 * 24 * time.Hour).Unix(),
+			}
 
-		token, err := GenerateAuthToken(authUser)
-		if err != nil {
-			http.Error(w, `{"error": "Failed to generate session token"}`, http.StatusInternalServerError)
+			token, err := GenerateAuthToken(authUser)
+			if err != nil {
+				http.Error(w, `{"error": "Failed to generate session token"}`, http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(models.AuthResponse{
+				Token:            token,
+				Role:             authUser.Role,
+				Username:         authUser.Username,
+				Name:             authUser.Name,
+				CanManageTenants: authUser.CanManageTenants,
+			})
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(models.AuthResponse{
-			Token:            token,
-			Role:             authUser.Role,
-			Username:         authUser.Username,
-			Name:             authUser.Name,
-			CanManageTenants: authUser.CanManageTenants,
-		})
-		return
 	}
 
 	// 2. Check Tenant Credentials

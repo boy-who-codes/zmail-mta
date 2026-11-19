@@ -20,7 +20,11 @@ import {
 
 const getApiBase = (): string => {
   if (typeof window !== "undefined") {
-    // If accessing from a remote browser (e.g. AWS EC2, Lightsail, public IP, custom domain)
+    // If accessing via main production port (no subport: port 80 / 443)
+    if (!window.location.port || window.location.port === "80" || window.location.port === "443") {
+      return `${window.location.protocol}//${window.location.hostname}${window.location.port ? ":" + window.location.port : ""}`;
+    }
+    // If accessing directly from a remote browser with dev ports
     if (!process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL.includes("localhost")) {
       if (window.location.hostname && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
         return `${window.location.protocol}//${window.location.hostname}:8080`;

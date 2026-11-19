@@ -1,19 +1,26 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 )
 
 func TestSMTPCredentialsAndAuth(t *testing.T) {
-	s := NewStore("")
+	tmpFile := filepath.Join(t.TempDir(), "test-smtp-state.json")
+	s := NewStore(tmpFile)
 
-	// Check default credentials seeded
-	creds := s.GetSMTPCredentials()
-	if len(creds) == 0 {
-		t.Fatalf("expected default smtp credentials to be seeded, got 0")
+	// Add a production SMTP credential
+	_, err := s.AddSMTPCredential("zmail_master", "zmail_live_sec_2026", "Master Relay User", "default")
+	if err != nil {
+		t.Fatalf("failed to add smtp credential: %v", err)
 	}
 
-	// Test successful auth with default master user
+	creds := s.GetSMTPCredentials()
+	if len(creds) == 0 {
+		t.Fatalf("expected smtp credentials, got 0")
+	}
+
+	// Test successful auth with master user
 	ok, pool, err := s.AuthenticateSMTP("zmail_master", "zmail_live_sec_2026")
 	if !ok || err != nil {
 		t.Fatalf("expected successful auth for zmail_master, got ok=%v, err=%v", ok, err)

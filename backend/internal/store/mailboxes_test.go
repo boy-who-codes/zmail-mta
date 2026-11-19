@@ -13,19 +13,35 @@ func TestMailboxRotationAndEligibility(t *testing.T) {
 
 	store := NewStore(tmpFile)
 
-	// Verify preloaded mailboxes
-	mailboxes := store.GetMailboxes()
-	if len(mailboxes) < 4 {
-		t.Fatalf("expected at least 4 default mailboxes, got %d", len(mailboxes))
-	}
-
-	// Verify preloaded pools
-	pools := store.GetMailboxPools()
-	if len(pools) < 2 {
-		t.Fatalf("expected at least 2 default pools, got %d", len(pools))
+	// Add test mailboxes for rotation verification
+	mbIDs := []string{"mbx-1", "mbx-2", "mbx-3", "mbx-4"}
+	for _, id := range mbIDs {
+		store.AddMailbox(models.Mailbox{
+			ID:                 id,
+			Email:              id + "@test.local",
+			Enabled:            true,
+			IsVerified:         true,
+			DailyLimit:         500,
+			HourlyLimit:        50,
+			MinIntervalSeconds: 60,
+			Weight:             25,
+		})
 	}
 
 	poolID := "pool-outbound-tier1"
+	store.AddMailboxPool(models.MailboxPool{
+		ID:         poolID,
+		Name:       "Test Pool",
+		Strategy:   "round_robin",
+		MailboxIDs: mbIDs,
+		Enabled:    true,
+	})
+
+	// Verify mailboxes
+	mailboxes := store.GetMailboxes()
+	if len(mailboxes) < 4 {
+		t.Fatalf("expected at least 4 mailboxes, got %d", len(mailboxes))
+	}
 
 	// Test 1: Round Robin selection across pool
 	p, err := store.GetMailboxPool(poolID)
