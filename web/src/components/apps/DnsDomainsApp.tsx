@@ -147,7 +147,6 @@ export const DnsDomainsApp: React.FC = () => {
   const [cfToken, setCfToken] = useState<string>("");
   const [cfApiKey, setCfApiKey] = useState<string>("");
   const [cfEmail, setCfEmail] = useState<string>("");
-  const [cfZoneId, setCfZoneId] = useState<string>("");
   const [cfIncludeMx, setCfIncludeMx] = useState<boolean>(true);
   const [cfRemember, setCfRemember] = useState<boolean>(true);
   const [isSyncingCf, setIsSyncingCf] = useState<boolean>(false);
@@ -393,7 +392,6 @@ export const DnsDomainsApp: React.FC = () => {
         api_token: cfToken.trim() || undefined,
         api_key: cfApiKey.trim() || undefined,
         email: cfEmail.trim() || undefined,
-        zone_id: cfZoneId.trim() || undefined,
         include_mx: cfIncludeMx,
         include_a: true,
       });
@@ -1424,17 +1422,25 @@ _dmarc 3600 IN TXT "${dmarcValue}"
                       </div>
                     </div>
 
-                    <div>
-                      <label className="block text-[11px] font-medium text-[#8a8f98] mb-1">
-                        Zone ID <span className="text-[#62666d]">(Optional — Leave blank for auto-detection)</span>
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Auto-detected from domain name if omitted"
-                        value={cfZoneId}
-                        onChange={(e) => setCfZoneId(e.target.value)}
-                        className="w-full bg-[#0a0a0c] border border-[#23252a] rounded px-3 py-2 text-xs text-[#f7f8f8] font-mono focus:outline-none focus:border-[#ff69b4]"
-                      />
+                    <div className="p-3 rounded-lg bg-[#f38020]/10 border border-[#f38020]/30 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                          <Cloud className="w-4 h-4 text-[#f38020]" />
+                          <span>Need a Cloudflare API Token?</span>
+                        </span>
+                        <a
+                          href="https://dash.cloudflare.com/profile/api-tokens?template=edit_zone_dns"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#f38020] hover:bg-[#fa8b2c] text-white text-[11px] font-bold transition-all shadow-sm"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span>Generate Token (Pre-filled)</span>
+                        </a>
+                      </div>
+                      <p className="text-[11px] text-[#8a8f98] leading-relaxed">
+                        Click the button above to open Cloudflare with the exact <strong>&quot;Edit zone DNS&quot;</strong> permission pre-selected. Click <strong>Continue to Summary → Create Token</strong>, then paste it here once. Zone ID is auto-discovered.
+                      </p>
                     </div>
 
                     <div className="flex items-center gap-2 pt-1">
