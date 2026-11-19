@@ -204,6 +204,38 @@ export async function detectInfrastructureNow(): Promise<InfrastructureInfo> {
   return res.json();
 }
 
+// --- REVERSE DNS (PTR) & FCrDNS CHECKER ---
+export interface RDNSCheckResult {
+  target: string;
+  resolved_ip: string;
+  ptr_records: string[];
+  primary_ptr: string;
+  has_ptr: boolean;
+  fcrdns_valid: boolean;
+  fcrdns_forward_ips: string[];
+  domain_aligned: boolean;
+  expected_domain?: string;
+  is_generic_isp: boolean;
+  isp_pattern_detected?: string;
+  compliance_status: "compliant" | "warning" | "failing";
+  compliance_score: number;
+  diagnostics: string[];
+  recommendation: string;
+  checked_at: string;
+}
+
+export async function checkRDNS(target?: string, domain?: string): Promise<RDNSCheckResult> {
+  const params = new URLSearchParams();
+  if (target) params.set("target", target);
+  if (domain) params.set("domain", domain);
+  const res = await fetch(`${API_BASE}/api/v1/dns/rdns?${params.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to execute reverse DNS lookup");
+  }
+  return res.json();
+}
+
 // --- IP POOLS CRUD ---
 export async function fetchIPPools() {
   const res = await fetch(`${API_BASE}/api/v1/ippools`);

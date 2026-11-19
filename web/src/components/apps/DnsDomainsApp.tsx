@@ -51,7 +51,9 @@ import {
   checkRBLTarget,
   fetchRBLSummary,
   RBLTargetAudit,
-  RBLAuditSummary
+  RBLAuditSummary,
+  checkRDNS,
+  RDNSCheckResult
 } from "../../lib/api";
 import { copyToClipboardSafe } from "../../lib/clipboard";
 
@@ -91,11 +93,36 @@ export const DnsDomainsApp: React.FC = () => {
   const [dnsDetails, setDnsDetails] = useState<DnsCheckResult | null>(null);
 
   // Screen state
-  const [subScreen, setSubScreen] = useState<"list" | "add-domain" | "cloudflare" | "rbl-watchdog">("list");
+  const [subScreen, setSubScreen] = useState<"list" | "add-domain" | "cloudflare" | "rbl-watchdog" | "rdns-checker">("list");
   const [domainInput, setDomainInput] = useState<string>("");
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [showDoctorModal, setShowDoctorModal] = useState<boolean>(false);
+
+  // rDNS / PTR Checker State
+  const [rdnsTargetInput, setRdnsTargetInput] = useState<string>("");
+  const [rdnsDomainInput, setRdnsDomainInput] = useState<string>("");
+  const [rdnsResult, setRdnsResult] = useState<RDNSCheckResult | null>(null);
+  const [isCheckingRdns, setIsCheckingRdns] = useState<boolean>(false);
+  const [rdnsError, setRdnsError] = useState<string>("");
+
+  const handleRunRdnsCheck = async (targetOverride?: string, domainOverride?: string) => {
+    const target = (targetOverride !== undefined ? targetOverride : rdnsTargetInput || infraInfo?.public_ip || selectedDomain || "").trim();
+    const domain = (domainOverride !== undefined ? domainOverride : rdnsDomainInput || selectedDomain || "").trim();
+    if (!target) return;
+    try {
+      setIsCheckingRdns(true);
+      setRdnsError("");
+      const res = await checkRDNS(target, domain);
+      setRdnsResult(res);
+      setRdnsTargetInput(res.target);
+      if (res.expected_domain) setRdnsDomainInput(res.expected_domain);
+    } catch (err: any) {
+      setRdnsError(err.message || "Failed to execute reverse DNS lookup");
+    } finally {
+      setIsCheckingRdns(false);
+    }
+  };
 
   // Batch Domain State
   const [showBatchModal, setShowBatchModal] = useState<boolean>(false);
@@ -527,6 +554,34 @@ _dmarc 3600 IN TXT "${dmarcValue}"
           >
             <Globe className="w-3.5 h-3.5" />
             <span>Domains & Records (SPF/DKIM/DMARC)</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSubScreen("rdns-checker");
+              if (!rdnsResult) {
+                handleRunRdnsCheck(infraInfo?.public_ip || selectedDomain || "127.0.0.1", selectedDomain);
+              }
+            }}
+            className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition-colors cursor-pointer text-xs ${
+              subScreen === "rdns-checker"
+                ? "bg-[#38bdf8]/15 text-[#38bdf8] border border-[#38bdf8]/30"
+                : "text-[#8a8f98] hover:text-[#f7f8f8] hover:bg-[#161820]"
+            }`}
+          >
+            <Server className="w-3.5 h-3.5 text-[#38bdf8]" />
+            <span>rDNS / PTR Checker</span>
+            {rdnsResult && (
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                rdnsResult.compliance_status === "compliant"
+                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                  : rdnsResult.compliance_status === "warning"
+                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                  : "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+              }`}>
+                {rdnsResult.compliance_status === "compliant" ? "FCrDNS Verified" : rdnsResult.compliance_status === "warning" ? "Generic ISP" : "No PTR"}
+              </span>
+            )}
           </button>
 
           <button
@@ -1959,6 +2014,301 @@ _dmarc 3600 IN TXT "${dmarcValue}"
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Reverse DNS (rDNS / PTR) & FCrDNS Diagnostic Checker Screen */}
+      {subScreen === "rdns-checker" && (
+        <div className="flex-1 flex flex-col bg-[#0a0a0c] overflow-y-auto">
+          {/* Header */}
+          <div className="px-5 py-3.5 bg-[#0f1011] border-b border-[#23252a] flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSubScreen("list")}
+                className="px-2.5 py-1 rounded bg-[#18191a] hover:bg-[#23252a] text-[#8a8f98] hover:text-[#f7f8f8] text-xs transition-colors cursor-pointer"
+              >
+                ← Back to Domains
+              </button>
+              <span className="text-[#62666d]">/</span>
+              <span className="font-semibold text-sm text-[#f7f8f8] flex items-center gap-2">
+                <Server className="w-4 h-4 text-[#38bdf8]" />
+                Reverse DNS (rDNS) &amp; FCrDNS Deliverability Engine
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-[#8a8f98] hidden sm:inline">RFC 5321 &bull; RFC 1035</span>
+            </div>
+          </div>
+
+          <div className="max-w-5xl mx-auto w-full p-6 space-y-6">
+            {/* Target Query Bar */}
+            <div className="p-4 rounded-xl bg-[#121316] border border-[#23252a] shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold text-[#f7f8f8]">
+                  Audit Sending IP or Mail Hostname for Reverse DNS &amp; Forward Alignment
+                </label>
+                <span className="text-[10px] text-[#8a8f98]">Mandatory for Google &amp; Yahoo 2024 compliance</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                <div className="relative md:col-span-7">
+                  <Server className="w-4 h-4 absolute left-3 top-2.5 text-[#8a8f98]" />
+                  <input
+                    type="text"
+                    value={rdnsTargetInput}
+                    onChange={(e) => setRdnsTargetInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleRunRdnsCheck()}
+                    placeholder="e.g. 198.51.100.1, mail.yourdomain.com, or hostname"
+                    className="w-full pl-9 pr-3 py-2 bg-[#0a0a0c] border border-[#23252a] rounded-lg text-xs font-mono text-[#f7f8f8] focus:outline-none focus:border-[#38bdf8]"
+                  />
+                </div>
+
+                <div className="relative md:col-span-3">
+                  <Globe className="w-4 h-4 absolute left-3 top-2.5 text-[#8a8f98]" />
+                  <input
+                    type="text"
+                    value={rdnsDomainInput}
+                    onChange={(e) => setRdnsDomainInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleRunRdnsCheck()}
+                    placeholder="Domain alignment (optional)"
+                    className="w-full pl-9 pr-3 py-2 bg-[#0a0a0c] border border-[#23252a] rounded-lg text-xs font-mono text-[#f7f8f8] focus:outline-none focus:border-[#38bdf8]"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <button
+                    onClick={() => handleRunRdnsCheck()}
+                    disabled={isCheckingRdns || !rdnsTargetInput.trim()}
+                    className="w-full py-2 px-3 rounded-lg bg-[#38bdf8] hover:bg-[#0284c7] text-[#0a0a0c] font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isCheckingRdns ? "animate-spin" : ""}`} />
+                    <span>{isCheckingRdns ? "Auditing..." : "Audit rDNS"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Fast Target Presets */}
+              <div className="flex items-center gap-2 pt-1 flex-wrap text-[11px] text-[#8a8f98]">
+                <span>Quick Presets:</span>
+                {infraInfo?.public_ip && (
+                  <button
+                    onClick={() => handleRunRdnsCheck(infraInfo.public_ip, selectedDomain)}
+                    className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#38bdf8] font-mono cursor-pointer transition-colors"
+                  >
+                    Egress IP: {infraInfo.public_ip}
+                  </button>
+                )}
+                {selectedDomain && (
+                  <>
+                    <button
+                      onClick={() => handleRunRdnsCheck(`mail.${selectedDomain}`, selectedDomain)}
+                      className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#f7f8f8] font-mono cursor-pointer transition-colors"
+                    >
+                      Host: mail.{selectedDomain}
+                    </button>
+                    <button
+                      onClick={() => handleRunRdnsCheck(selectedDomain, selectedDomain)}
+                      className="px-2 py-0.5 rounded bg-[#18191a] hover:bg-[#23252a] border border-[#2b2d33] text-[#8a8f98] hover:text-[#f7f8f8] font-mono cursor-pointer transition-colors"
+                    >
+                      Apex: {selectedDomain}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Error Message */}
+            {rdnsError && (
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{rdnsError}</span>
+              </div>
+            )}
+
+            {/* Audit Results Presentation */}
+            {rdnsResult && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* Score & Compliance Banner */}
+                <div className={`p-5 rounded-2xl border shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
+                  rdnsResult.compliance_status === "compliant"
+                    ? "bg-gradient-to-r from-emerald-950/40 via-[#0f141a] to-[#0f1011] border-emerald-500/30"
+                    : rdnsResult.compliance_status === "warning"
+                    ? "bg-gradient-to-r from-amber-950/40 via-[#14120f] to-[#0f1011] border-amber-500/30"
+                    : "bg-gradient-to-r from-rose-950/40 via-[#140f11] to-[#0f1011] border-rose-500/30"
+                }`}>
+                  <div className="space-y-1.5 max-w-2xl">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono uppercase tracking-wider flex items-center gap-1.5 ${
+                        rdnsResult.compliance_status === "compliant"
+                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                          : rdnsResult.compliance_status === "warning"
+                          ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                          : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
+                      }`}>
+                        {rdnsResult.compliance_status === "compliant" ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            100% FCrDNS Verified &bull; Google &amp; Yahoo Compliant
+                          </>
+                        ) : rdnsResult.compliance_status === "warning" ? (
+                          <>
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            Warning &bull; Generic ISP Hostname Detected
+                          </>
+                        ) : (
+                          <>
+                            <XCircle className="w-3.5 h-3.5" />
+                            Critical &bull; Reverse DNS (PTR) Failing
+                          </>
+                        )}
+                      </span>
+                      <span className="text-[11px] text-[#8a8f98]">Audited target: <strong className="text-white font-mono">{rdnsResult.target}</strong></span>
+                    </div>
+
+                    <p className="text-xs text-[#d0d6e0] leading-relaxed pt-1">
+                      {rdnsResult.recommendation}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0 self-end md:self-center">
+                    <div className="text-right">
+                      <div className="text-[10px] font-mono uppercase text-[#8a8f98]">FCrDNS Score</div>
+                      <div className={`text-2xl font-black font-mono ${
+                        rdnsResult.compliance_score >= 80 ? "text-emerald-400" : rdnsResult.compliance_score >= 50 ? "text-amber-400" : "text-rose-400"
+                      }`}>
+                        {rdnsResult.compliance_score}<span className="text-xs text-[#62666d]">/100</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4-Point Technical Breakdown Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {/* Card 1: Egress IP */}
+                  <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-1">
+                    <div className="text-[10px] font-mono uppercase text-[#8a8f98]">1. Resolved Egress IP</div>
+                    <div className="font-mono text-sm font-bold text-white truncate" title={rdnsResult.resolved_ip}>
+                      {rdnsResult.resolved_ip}
+                    </div>
+                    <div className="text-[10px] text-emerald-400 flex items-center gap-1 pt-1">
+                      <Check className="w-3 h-3" /> Valid IPv4 Address
+                    </div>
+                  </div>
+
+                  {/* Card 2: Reverse DNS PTR Record */}
+                  <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-1">
+                    <div className="text-[10px] font-mono uppercase text-[#8a8f98]">2. PTR Record (in-addr.arpa)</div>
+                    <div className="font-mono text-xs font-bold text-white truncate" title={rdnsResult.primary_ptr || "No PTR"}>
+                      {rdnsResult.primary_ptr || "None Configured"}
+                    </div>
+                    <div className={`text-[10px] flex items-center gap-1 pt-1 ${rdnsResult.has_ptr ? "text-emerald-400" : "text-rose-400"}`}>
+                      {rdnsResult.has_ptr ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+                      {rdnsResult.has_ptr ? "PTR Active" : "No PTR Record"}
+                    </div>
+                  </div>
+
+                  {/* Card 3: Forward A Record */}
+                  <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-1">
+                    <div className="text-[10px] font-mono uppercase text-[#8a8f98]">3. Forward A Record (PTR → IP)</div>
+                    <div className="font-mono text-xs font-bold text-white truncate" title={rdnsResult.fcrdns_forward_ips.join(", ") || "No Forward IP"}>
+                      {rdnsResult.fcrdns_forward_ips.join(", ") || "No A Record"}
+                    </div>
+                    <div className={`text-[10px] flex items-center gap-1 pt-1 ${rdnsResult.fcrdns_forward_ips.length > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      {rdnsResult.fcrdns_forward_ips.length > 0 ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+                      {rdnsResult.fcrdns_forward_ips.length > 0 ? "A Record Exists" : "Missing Forward A"}
+                    </div>
+                  </div>
+
+                  {/* Card 4: FCrDNS Match */}
+                  <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-1">
+                    <div className="text-[10px] font-mono uppercase text-[#8a8f98]">4. FCrDNS Match (RFC 5321)</div>
+                    <div className="font-mono text-xs font-bold text-white truncate">
+                      {rdnsResult.fcrdns_valid ? "IP Matches Forward A" : "Mismatch / Broken"}
+                    </div>
+                    <div className={`text-[10px] flex items-center gap-1 pt-1 ${rdnsResult.fcrdns_valid ? "text-emerald-400" : "text-rose-400"}`}>
+                      {rdnsResult.fcrdns_valid ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                      {rdnsResult.fcrdns_valid ? "FCrDNS Verified" : "Mismatched"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Step-by-Step Diagnostic Trace */}
+                <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-3">
+                  <div className="text-xs font-semibold text-white flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-[#38bdf8]" />
+                    <span>Technical Deliverability Diagnostic Log</span>
+                  </div>
+
+                  <div className="divide-y divide-[#181a20] text-xs font-mono space-y-1">
+                    {rdnsResult.diagnostics.map((diag, i) => (
+                      <div key={i} className="py-2 flex items-start gap-2.5">
+                        <span className="text-[#62666d] select-none text-[11px] pt-0.5">#{i + 1}</span>
+                        <span className={diag.startsWith("✓") ? "text-emerald-300" : diag.startsWith("⚠️") ? "text-amber-300" : "text-rose-300"}>
+                          {diag}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Cloud Hosting Provider rDNS Setup Guides */}
+                <div className="p-4 rounded-xl bg-[#0f1011] border border-[#23252a] space-y-3">
+                  <div className="flex items-center justify-between border-b border-[#23252a] pb-2">
+                    <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                      <Server className="w-4 h-4 text-[#ff69b4]" />
+                      <span>How to Configure rDNS / PTR at Major Hosting Providers</span>
+                    </span>
+                    <span className="text-[10px] text-[#8a8f98]">Set PTR to: <code className="text-[#ff69b4]">mail.{selectedDomain || "yourdomain.com"}</code></span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">Hetzner Cloud &amp; Robot</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Open <strong>Cloud Console</strong> → Select Server → <strong>Networking</strong> → Click <strong>&quot;...&quot;</strong> on IPv4 → <strong>Edit Reverse DNS</strong> → Enter <code className="text-white">mail.{selectedDomain || "yourdomain.com"}</code>.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">DigitalOcean Droplets</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Open <strong>Networking</strong> → <strong>PTR Records</strong> (or rename Droplet to your full FQDN: <code className="text-white">mail.{selectedDomain || "yourdomain.com"}</code>, which auto-sets rDNS).
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">OVHcloud</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Navigate to <strong>Bare Metal Cloud</strong> or <strong>Public Cloud</strong> → <strong>IP</strong> → Click <strong>&quot;...&quot;</strong> beside IP → <strong>Modify Reverse DNS</strong>.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">AWS EC2 (Elastic IP)</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Open <strong>EC2 Dashboard</strong> → <strong>Elastic IPs</strong> → Select IP → <strong>Actions</strong> → <strong>Update reverse DNS</strong> → Enter FQDN and confirm.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">Linode / Akamai</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Go to <strong>Linodes</strong> → Click your server → <strong>Network</strong> → Click <strong>&quot;Edit RDNS&quot;</strong> next to IPv4 address → Save.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#14151a] border border-[#1f222b] space-y-1">
+                      <div className="font-bold text-xs text-white">Contabo VPS</div>
+                      <p className="text-[11px] text-[#8a8f98]">
+                        Log into <strong>Contabo Customer Control Panel</strong> → <strong>Reverse DNS Management</strong> → Enter the IP and new reverse DNS hostname.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

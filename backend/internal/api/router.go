@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -180,6 +181,10 @@ func (s *Server) registerRoutes() {
 	// Real-Time DNS Blacklist (RBL) Watchdog Endpoints
 	s.mux.HandleFunc("GET /api/v1/dns/rbl/check", s.handleCheckRBLTarget)
 	s.mux.HandleFunc("GET /api/v1/dns/rbl/summary", s.handleGetRBLSummary)
+
+	// Reverse DNS (PTR) & FCrDNS Diagnostic Checker Endpoints
+	s.mux.HandleFunc("GET /api/v1/dns/rdns", s.handleCheckRDNS)
+	s.mux.HandleFunc("POST /api/v1/dns/rdns", s.handleCheckRDNS)
 
 	// Audience & Contacts Directory Endpoints
 	s.mux.HandleFunc("GET /api/v1/contacts", s.handleGetContacts)
@@ -415,6 +420,59 @@ func (s *Server) handleVerifyDomain(w http.ResponseWriter, r *http.Request) {
 	s.store.UpdateDomainStatus(body.Domain, spfStatus, dkimStatus, dmarcStatus, ptrStatus)
 
 	json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleCheckRDNS(w http.ResponseWriter, r *http.Request) {
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	if target == "" {
+		target = strings.TrimSpace(r.URL.Query().Get("ip"))
+	}
+	expectedDomain := strings.TrimSpace(r.URL.Query().Get("domain"))
+
+	if r.Method == http.MethodPost && target == "" {
+		var body struct {
+			Target         string `json:"target"`
+			IP             string `json:"ip"`
+			ExpectedDomain string `json:"domain"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			if body.Target != "" {
+				target = body.Target
+			} else if body.IP != "" {
+				target = body.IP
+			}
+			if body.ExpectedDomain != "" {
+				expectedDomain = body.ExpectedDomain
+			}
+		}
+	}
+
+	// Auto-detect public IP if target not provided
+	if target == "" {
+		infra, _ := s.store.GetInfrastructureInfo(false)
+		if infra != nil && infra.PublicIP != "" {
+			target = infra.PublicIP
+		} else {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err == nil && host != "" && host != "127.0.0.1" && host != "::1" {
+				target = host
+			} else {
+				target = "127.0.0.1"
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := dns.CheckRDNS(ctx, target, expectedDomain)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) handleGenerateDKIM(w http.ResponseWriter, r *http.Request) {
