@@ -807,3 +807,80 @@ type BatchAddMailboxesResponse struct {
 	Failed  []string   `json:"failed,omitempty"`
 	Message string     `json:"message"`
 }
+
+// OutboundPreflightReport details end-to-end outbound email deliverability readiness
+type OutboundPreflightReport struct {
+	OverallStatus             string                 `json:"overall_status"` // "ready", "degraded", "blocked"
+	Summary                   string                 `json:"summary"`
+	CanSendOutbound           bool                   `json:"can_send_outbound"`
+	TestedAt                  time.Time              `json:"tested_at"`
+	PublicIP                  string                 `json:"public_ip"`
+	IsPublicIP                bool                   `json:"is_public_ip"`
+	Port25Status              Port25Check            `json:"port_25_status"`
+	KumoMTAStatus             KumoMTACheck           `json:"kumomta_status"`
+	ReverseDNS                ReverseDNSCheck        `json:"reverse_dns"`
+	BlacklistStatus           []BlacklistCheck       `json:"blacklist_status"`
+	DomainHealth              []DomainPreflightCheck `json:"domain_health"`
+	ActionableRecommendations []string               `json:"actionable_recommendations"`
+}
+
+type Port25Check struct {
+	IsOpen       bool             `json:"is_open"`
+	LatencyMs    int64            `json:"latency_ms"`
+	Targets      []PortTargetTest `json:"targets"`
+	ErrorMessage string           `json:"error_message,omitempty"`
+}
+
+type PortTargetTest struct {
+	Target    string `json:"target"`
+	Provider  string `json:"provider"`
+	Connected bool   `json:"connected"`
+	Banner    string `json:"banner,omitempty"`
+	LatencyMs int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+type KumoMTACheck struct {
+	IsHealthy bool   `json:"is_healthy"`
+	Endpoint  string `json:"endpoint"`
+	Banner    string `json:"banner,omitempty"`
+	LatencyMs int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+type ReverseDNSCheck struct {
+	IP               string   `json:"ip"`
+	PTRHostname      string   `json:"ptr_hostname"`
+	IsConfigured     bool     `json:"is_configured"`
+	ForwardConfirmed bool     `json:"forward_confirmed"`
+	Issues           []string `json:"issues,omitempty"`
+}
+
+type BlacklistCheck struct {
+	RBL     string `json:"rbl"`
+	Listed  bool   `json:"listed"`
+	Details string `json:"details"`
+}
+
+type DomainPreflightCheck struct {
+	Domain     string   `json:"domain"`
+	MXValid    bool     `json:"mx_valid"`
+	SPFValid   bool     `json:"spf_valid"`
+	DKIMValid  bool     `json:"dkim_valid"`
+	DMARCValid bool     `json:"dmarc_valid"`
+	Issues     []string `json:"issues,omitempty"`
+}
+
+type CanaryProbeRequest struct {
+	Recipient  string `json:"recipient"`
+	FromDomain string `json:"from_domain,omitempty"`
+}
+
+type CanaryProbeResult struct {
+	Success   bool      `json:"success"`
+	MessageID string    `json:"message_id"`
+	Recipient string    `json:"recipient"`
+	Queue     string    `json:"queue"`
+	Response  string    `json:"response"`
+	SentAt    time.Time `json:"sent_at"`
+}

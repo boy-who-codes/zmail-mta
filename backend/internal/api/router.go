@@ -243,8 +243,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/templates", s.handleDeleteTemplate)
 	s.mux.HandleFunc("POST /api/v1/templates/render", s.handleRenderTemplate)
 
-	// Deliverability Health Radar
+	// Deliverability Health Radar & Outbound Preflight Doctor
 	s.mux.HandleFunc("GET /api/v1/deliverability/health", s.handleGetDeliverabilityHealth)
+	s.mux.HandleFunc("GET /api/v1/deliverability/preflight", s.handleGetDeliverabilityPreflight)
+	s.mux.HandleFunc("POST /api/v1/deliverability/canary-probe", s.handleRunCanaryProbe)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1946,4 +1948,32 @@ func (s *Server) handleRenderTemplate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetDeliverabilityHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.store.GetDeliverabilityHealth())
+}
+
+func (s *Server) handleGetDeliverabilityPreflight(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	report, err := s.store.RunOutboundPreflight(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func (s *Server) handleRunCanaryProbe(w http.ResponseWriter, r *http.Request) {
+	var req models.CanaryProbeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "invalid json payload"}`, http.StatusBadRequest)
+		return
+	}
+	res, err := s.store.RunCanaryProbe(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }

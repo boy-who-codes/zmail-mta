@@ -31,7 +31,9 @@ import {
   Zap,
   Info,
   Layers,
+  Radio,
 } from "lucide-react";
+import { OutboundDoctorModal } from "../modals/OutboundDoctorModal";
 import {
   fetchDomains,
   addDomain,
@@ -93,6 +95,7 @@ export const DnsDomainsApp: React.FC = () => {
   const [domainInput, setDomainInput] = useState<string>("");
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [showDoctorModal, setShowDoctorModal] = useState<boolean>(false);
 
   // Batch Domain State
   const [showBatchModal, setShowBatchModal] = useState<boolean>(false);
@@ -654,6 +657,13 @@ _dmarc 3600 IN TXT "${dmarcValue}"
           >
             <Layers className="w-3.5 h-3.5 text-[#3b9eff]" />
             <span>Batch Add Domains</span>
+          </button>
+          <button
+            onClick={() => setShowDoctorModal(true)}
+            className="w-full py-1.5 rounded bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 text-[#ff69b4] border border-[#ff69b4]/30 font-medium flex items-center justify-center gap-1.5 transition-colors text-xs cursor-pointer"
+          >
+            <Radio className="w-3.5 h-3.5 animate-pulse" />
+            <span>Outbound Deliverability Doctor</span>
           </button>
         </div>
       </div>
@@ -2015,6 +2025,12 @@ _dmarc 3600 IN TXT "${dmarcValue}"
           </div>
         </div>
       )}
+
+      {/* Outbound Deliverability Doctor Modal */}
+      <OutboundDoctorModal
+        isOpen={showDoctorModal}
+        onClose={() => setShowDoctorModal(false)}
+      />
     </div>
   </div>
   );

@@ -25,7 +25,9 @@ import {
   Layers,
   ChevronDown,
   Lock,
+  Radio,
 } from "lucide-react";
+import { OutboundDoctorModal } from "../modals/OutboundDoctorModal";
 import {
   fetchMailboxes,
   fetchInboundMessages,
@@ -61,6 +63,7 @@ export const WebmailApp: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showDoctorModal, setShowDoctorModal] = useState<boolean>(false);
 
   // Reply Drawer State
   const [replyBody, setReplyBody] = useState("");
@@ -384,6 +387,16 @@ export const WebmailApp: React.FC = () => {
             <Sparkles className="w-3.5 h-3.5 text-[#3b9eff]" />
             <span>Test Inbound Receive</span>
           </button>
+
+          {/* Outbound Deliverability Preflight Button */}
+          <button
+            onClick={() => setShowDoctorModal(true)}
+            className="w-full py-2 px-2.5 rounded-lg border border-[#ff69b4]/30 bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 text-[#ff69b4] text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            title="Run live outbound deliverability & Port 25 diagnostics"
+          >
+            <Radio className="w-3.5 h-3.5 animate-pulse" />
+            <span>Outbound Doctor</span>
+          </button>
         </div>
 
         {/* Storage / Connection status footer */}
@@ -689,6 +702,12 @@ export const WebmailApp: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Outbound Deliverability Preflight Modal */}
+      <OutboundDoctorModal
+        isOpen={showDoctorModal}
+        onClose={() => setShowDoctorModal(false)}
+      />
     </div>
   );
 };

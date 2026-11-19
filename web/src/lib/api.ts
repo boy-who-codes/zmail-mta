@@ -1942,4 +1942,97 @@ export async function bounceKumoQueue(domain: string, reason?: string, duration?
   return res.json();
 }
 
+export interface PortTargetTest {
+  target: string;
+  provider: string;
+  connected: boolean;
+  banner?: string;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface Port25Check {
+  is_open: boolean;
+  latency_ms: number;
+  targets: PortTargetTest[];
+  error_message?: string;
+}
+
+export interface KumoMTACheck {
+  is_healthy: boolean;
+  endpoint: string;
+  banner?: string;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface ReverseDNSCheck {
+  ip: string;
+  ptr_hostname: string;
+  is_configured: boolean;
+  forward_confirmed: boolean;
+  issues?: string[];
+}
+
+export interface BlacklistCheck {
+  rbl: string;
+  listed: boolean;
+  details: string;
+}
+
+export interface DomainPreflightCheck {
+  domain: string;
+  mx_valid: boolean;
+  spf_valid: boolean;
+  dkim_valid: boolean;
+  dmarc_valid: boolean;
+  issues?: string[];
+}
+
+export interface OutboundPreflightReport {
+  overall_status: "ready" | "degraded" | "blocked";
+  summary: string;
+  can_send_outbound: boolean;
+  tested_at: string;
+  public_ip: string;
+  is_public_ip: boolean;
+  port_25_status: Port25Check;
+  kumomta_status: KumoMTACheck;
+  reverse_dns: ReverseDNSCheck;
+  blacklist_status: BlacklistCheck[];
+  domain_health: DomainPreflightCheck[];
+  actionable_recommendations: string[];
+}
+
+export interface CanaryProbeResult {
+  success: boolean;
+  message_id: string;
+  recipient: string;
+  queue: string;
+  response: string;
+  sent_at: string;
+}
+
+export async function fetchOutboundPreflight(): Promise<OutboundPreflightReport> {
+  const res = await fetch(`${API_BASE}/api/v1/deliverability/preflight`);
+  if (!res.ok) {
+    throw new Error("Failed to load outbound preflight diagnostics");
+  }
+  return res.json();
+}
+
+export async function runCanaryProbe(recipient: string, fromDomain?: string): Promise<CanaryProbeResult> {
+  const res = await fetch(`${API_BASE}/api/v1/deliverability/canary-probe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient, from_domain: fromDomain }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Canary probe failed");
+  }
+  return res.json();
+}
+
+
 

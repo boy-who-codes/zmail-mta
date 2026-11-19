@@ -34,7 +34,10 @@ import {
   Lock,
   LogOut,
   User,
+  Radio,
 } from "lucide-react";
+import { fetchOutboundPreflight, OutboundPreflightReport } from "../../lib/api";
+import { OutboundDoctorModal } from "../modals/OutboundDoctorModal";
 
 export const TopMenuBar: React.FC = () => {
   const {
@@ -53,6 +56,22 @@ export const TopMenuBar: React.FC = () => {
   const [dateStr, setDateStr] = useState<string>("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [outboundPreflight, setOutboundPreflight] = useState<OutboundPreflightReport | null>(null);
+  const [isDoctorOpen, setIsDoctorOpen] = useState(false);
+
+  useEffect(() => {
+    const checkOutbound = async () => {
+      try {
+        const report = await fetchOutboundPreflight();
+        setOutboundPreflight(report);
+      } catch (err) {
+        console.error("Outbound preflight check error:", err);
+      }
+    };
+    checkOutbound();
+    const probeInterval = setInterval(checkOutbound, 45000);
+    return () => clearInterval(probeInterval);
+  }, []);
 
   useEffect(() => {
     const updateTime = () => {
@@ -671,17 +690,54 @@ export const TopMenuBar: React.FC = () => {
           </div>
         </div>
 
-        {/* System Health Pulse Indicator */}
-        <div
-          title="System Status: All email servers online and synchronized"
-          className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#27a644]/10 border border-[#27a644]/30 text-[10px] text-[#27a644] cursor-help"
+        {/* Live Outbound Deliverability Preflight Indicator */}
+        <button
+          onClick={() => setIsDoctorOpen(true)}
+          title={`Outbound Deliverability Status: ${outboundPreflight?.summary || "Click to run preflight check"}`}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold cursor-pointer transition-all active:scale-95 ${
+            outboundPreflight?.overall_status === "ready"
+              ? "bg-[#27a644]/15 hover:bg-[#27a644]/25 border border-[#27a644]/40 text-[#27a644]"
+              : outboundPreflight?.overall_status === "degraded"
+              ? "bg-[#ff9800]/15 hover:bg-[#ff9800]/25 border border-[#ff9800]/40 text-[#ff9800]"
+              : outboundPreflight?.overall_status === "blocked"
+              ? "bg-[#ff2047]/15 hover:bg-[#ff2047]/25 border border-[#ff2047]/40 text-[#ff2047] animate-pulse"
+              : "bg-white/5 hover:bg-white/10 border border-white/10 text-slate-400"
+          }`}
         >
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#27a644] opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#27a644]"></span>
+            <span
+              className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                outboundPreflight?.overall_status === "ready"
+                  ? "bg-[#27a644]"
+                  : outboundPreflight?.overall_status === "degraded"
+                  ? "bg-[#ff9800]"
+                  : outboundPreflight?.overall_status === "blocked"
+                  ? "bg-[#ff2047]"
+                  : "bg-slate-400"
+              }`}
+            ></span>
+            <span
+              className={`relative inline-flex rounded-full h-2 w-2 ${
+                outboundPreflight?.overall_status === "ready"
+                  ? "bg-[#27a644]"
+                  : outboundPreflight?.overall_status === "degraded"
+                  ? "bg-[#ff9800]"
+                  : outboundPreflight?.overall_status === "blocked"
+                  ? "bg-[#ff2047]"
+                  : "bg-slate-400"
+              }`}
+            ></span>
           </span>
-          <span className="hidden sm:inline font-medium">All Systems Normal</span>
-        </div>
+          <span className="hidden sm:inline">
+            {outboundPreflight?.overall_status === "ready"
+              ? "Outbound Ready"
+              : outboundPreflight?.overall_status === "degraded"
+              ? "Outbound Degraded"
+              : outboundPreflight?.overall_status === "blocked"
+              ? "Port 25 Firewalled"
+              : "Checking Outbound..."}
+          </span>
+        </button>
 
         {/* Notifications */}
         <button
@@ -778,6 +834,11 @@ export const TopMenuBar: React.FC = () => {
           <span>{timeStr}</span>
         </div>
       </div>
+
+      <OutboundDoctorModal
+        isOpen={isDoctorOpen}
+        onClose={() => setIsDoctorOpen(false)}
+      />
     </div>
   );
 };
