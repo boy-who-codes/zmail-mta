@@ -336,6 +336,8 @@ type Mailbox struct {
 	HealthStatus       string    `json:"health_status"` // "excellent", "good", "warning", "suspended"
 	Weight             int       `json:"weight"`        // 1-100 for weighted round robin
 	CredentialRef      string    `json:"credential_ref,omitempty"` // encrypted key reference or "system_internal"
+	Password           string    `json:"password,omitempty"`
+	PasswordHash       string    `json:"password_hash,omitempty"`
 	SMTPHost           string    `json:"smtp_host,omitempty"`
 	SMTPPort           int       `json:"smtp_port,omitempty"`
 	SMTPUser           string    `json:"smtp_user,omitempty"`
@@ -775,4 +777,33 @@ type WarmupDaemonSummary struct {
 	TotalPaused     int                      `json:"total_paused"`
 	Schedules       []WarmupScheduleProgress `json:"schedules"`
 	LastEvaluatedAt time.Time                `json:"last_evaluated_at"`
+}
+
+// BatchAddDomainsRequest allows importing multiple sending domains simultaneously
+type BatchAddDomainsRequest struct {
+	Domains []string `json:"domains"`
+}
+
+// BatchAddDomainsResponse summarizes batch domain creation
+type BatchAddDomainsResponse struct {
+	Added   []*Domain `json:"added"`
+	Failed  []string  `json:"failed,omitempty"`
+	Message string    `json:"message"`
+}
+
+// BatchAddMailboxesRequest defines bulk mailbox provisioning across one or more domains
+type BatchAddMailboxesRequest struct {
+	Domains     []string `json:"domains"`
+	Prefixes    []string `json:"prefixes"`
+	Password    string   `json:"password,omitempty"`
+	IPPoolID    string   `json:"ip_pool_id,omitempty"`
+	DailyLimit  int      `json:"daily_limit,omitempty"`
+	HourlyLimit int      `json:"hourly_limit,omitempty"`
+}
+
+// BatchAddMailboxesResponse returns created mailboxes and credentials summary
+type BatchAddMailboxesResponse struct {
+	Added   []*Mailbox `json:"added"`
+	Failed  []string   `json:"failed,omitempty"`
+	Message string     `json:"message"`
 }

@@ -165,3 +165,25 @@ func (s *Server) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(updated)
 }
+
+func (s *Server) handleBatchAddMailboxes(w http.ResponseWriter, r *http.Request) {
+	var req models.BatchAddMailboxesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	added, failed, err := s.store.BatchAddMailboxes(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(models.BatchAddMailboxesResponse{
+		Added:   added,
+		Failed:  failed,
+		Message: "Batch mailbox provisioning completed",
+	})
+}

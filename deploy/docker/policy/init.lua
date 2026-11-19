@@ -89,6 +89,37 @@ local memoized_dkim_signer = kumo.memoize(get_dkim_signer_for_domain, {
   capacity = 128,
 })
 
+-- Helper: Check if domain is registered locally in MailOps
+local function is_domain_local(domain)
+  if not domain or domain == '' then
+    return false
+  end
+  local clean = string.lower(domain):gsub('^<', ''):gsub('>$', '')
+  if clean == 'zmail.local' or clean == 'mailops.local' then
+    return true
+  end
+
+  local ok, res = pcall(function()
+    local client = kumo.http.build_client({})
+    local req = client:get('http://mailops-backend:8080/api/v1/domains/check-local?domain=' .. clean)
+    return req:send()
+  end)
+
+  if ok and res and res:status_code() == 200 then
+    local parse_ok, data = pcall(kumo.serde.json_parse, res:text())
+    if parse_ok and data and data.is_local then
+      return true
+    end
+  end
+  return false
+end
+
+local memoized_is_local = kumo.memoize(is_domain_local, {
+  name = 'mailops_memoized_is_local',
+  ttl = '30 seconds',
+  capacity = 256,
+})
+
 -- Traffic Shaping configuration
 local shaper = shaping:setup_with_automation {
   publish = { 'http://kumo-tsa:8008' },
@@ -231,7 +262,20 @@ kumo.on('smtp_server_message_received', function(msg)
 
   -- Standalone Two-Way Mailbox Routing: Deliver local recipient messages to Maildir for Dovecot IMAP
   local rec_lower = string.lower(recipient):gsub('^<', ''):gsub('>$', '')
-  if string.find(rec_lower, 'zmail.local') or string.find(rec_lower, 'mailops.local') or msg:get_first_named_header_value('X-Local-Delivery') then
+  local rec_domain = ''
+  local at_pos = string.find(rec_lower, '@')
+  if at_pos then
+    rec_domain = string.sub(rec_lower, at_pos + 1)
+  end
+
+  local is_local = false
+  if rec_domain == 'zmail.local' or rec_domain == 'mailops.local' then
+    is_local = true
+  elseif rec_domain ~= '' and memoized_is_local(rec_domain) then
+    is_local = true
+  end
+
+  if is_local or msg:get_first_named_header_value('X-Local-Delivery') then
     msg:set_meta('campaign', 'maildir')
   end
 
@@ -254,9 +298,9 @@ kumo.on('smtp_server_message_received', function(msg)
     if from_hdr and from_hdr.domain then
       sender_domain = from_hdr.domain
     else
-      local _, at_pos = string.find(sender, '@')
-      if at_pos then
-        sender_domain = string.sub(sender, at_pos + 1):gsub('>$', '')
+      local _, at_sym = string.find(sender, '@')
+      if at_sym then
+        sender_domain = string.sub(sender, at_sym + 1):gsub('>$', '')
       end
     end
 
@@ -277,25 +321,26 @@ kumo.on('smtp_server_message_received', function(msg)
 
   -- Forward reception record to MAILOPS Control Plane for live inbox capture & ARF processing
   pcall(function()
-    kumo.http.build_client({}):post({
-      url = 'http://mailops-backend:8080/api/v1/inbound',
-      headers = { ['Content-Type'] = 'application/json' },
-      body = kumo.json_encode({
-        id = id,
-        sender = sender,
-        recipient = recipient,
-        subject = subject,
-        pool = pool_header or 'default',
-        body_text = raw_data,
-        raw_mime = raw_data,
-        raw_headers = {
-          ['content-type'] = content_type,
-          ['subject'] = subject,
-          ['from'] = sender,
-          ['to'] = recipient,
-        },
-        received_at = os.time(),
-      }),
-    })
+    local client = kumo.http.build_client({})
+    local req = client:post('http://mailops-backend:8080/api/v1/inbound')
+    req:header('Content-Type', 'application/json')
+    req:body(kumo.json_encode({
+      id = id,
+      sender = sender,
+      recipient = recipient,
+      subject = subject,
+      pool = pool_header or 'default',
+      body_text = raw_data,
+      body_html = raw_data,
+      raw_mime = raw_data,
+      raw_headers = {
+        ['content-type'] = content_type,
+        ['subject'] = subject,
+        ['from'] = sender,
+        ['to'] = recipient,
+      },
+      received_at = os.time(),
+    }))
+    req:send()
   end)
 end)

@@ -29,11 +29,13 @@ import {
   Code2,
   Terminal,
   Zap,
-  Info
+  Info,
+  Layers,
 } from "lucide-react";
 import {
   fetchDomains,
   addDomain,
+  batchAddDomains,
   deleteDomain,
   setPrimaryDomain,
   verifyDomain,
@@ -91,6 +93,12 @@ export const DnsDomainsApp: React.FC = () => {
   const [domainInput, setDomainInput] = useState<string>("");
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // Batch Domain State
+  const [showBatchModal, setShowBatchModal] = useState<boolean>(false);
+  const [batchDomainsInput, setBatchDomainsInput] = useState<string>("");
+  const [isBatchAdding, setIsBatchAdding] = useState<boolean>(false);
+  const [batchResultMsg, setBatchResultMsg] = useState<string>("");
 
   // RBL Blacklist Watchdog State
   const [rblTargetInput, setRblTargetInput] = useState<string>("");
@@ -274,6 +282,43 @@ export const DnsDomainsApp: React.FC = () => {
       alert(err.message || "Failed to add domain");
     } finally {
       setIsAdding(false);
+    }
+  };
+
+  const handleBatchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const rawList = batchDomainsInput
+      .split(/[\n,]+/)
+      .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+      .filter((d) => d.length > 0 && d.includes("."));
+
+    if (rawList.length === 0) {
+      alert("Please enter at least one valid domain name.");
+      return;
+    }
+
+    try {
+      setIsBatchAdding(true);
+      setBatchResultMsg("");
+      const res = await batchAddDomains(rawList);
+      await loadDomains();
+      if (res.added && res.added.length > 0) {
+        setSelectedDomain(res.added[0].domain_name || res.added[0].domain);
+      }
+      setBatchResultMsg(
+        `Success! Added ${res.added.length} domains with 2048-bit RSA DKIM keypairs.${
+          res.failed && res.failed.length > 0 ? ` (${res.failed.length} skipped)` : ""
+        }`
+      );
+      setTimeout(() => {
+        setShowBatchModal(false);
+        setBatchDomainsInput("");
+        setBatchResultMsg("");
+      }, 2500);
+    } catch (err: any) {
+      alert(err.message || "Failed to batch add domains");
+    } finally {
+      setIsBatchAdding(false);
     }
   };
 
@@ -595,13 +640,20 @@ _dmarc 3600 IN TXT "${dmarcValue}"
           )}
         </div>
 
-        <div className="p-2 border-t border-[#23252a]">
+        <div className="p-2 border-t border-[#23252a] space-y-1.5">
           <button
             onClick={() => setSubScreen("add-domain")}
-            className="w-full py-2 rounded bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 text-[#ff69b4] border border-[#ff69b4]/30 font-medium flex items-center justify-center gap-1.5 transition-colors text-xs"
+            className="w-full py-2 rounded bg-[#ff69b4]/10 hover:bg-[#ff69b4]/20 text-[#ff69b4] border border-[#ff69b4]/30 font-medium flex items-center justify-center gap-1.5 transition-colors text-xs cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Connect Domain</span>
+          </button>
+          <button
+            onClick={() => setShowBatchModal(true)}
+            className="w-full py-1.5 rounded bg-[#161820] hover:bg-[#1f222e] text-[#d0d6e0] border border-[#2a2d3d] font-medium flex items-center justify-center gap-1.5 transition-colors text-xs cursor-pointer"
+          >
+            <Layers className="w-3.5 h-3.5 text-[#3b9eff]" />
+            <span>Batch Add Domains</span>
           </button>
         </div>
       </div>
@@ -1894,6 +1946,72 @@ _dmarc 3600 IN TXT "${dmarcValue}"
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Batch Add Domains Modal */}
+      {showBatchModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#121316] border border-[#23252a] rounded-xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#23252a]">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-[#3b9eff]" />
+                <h3 className="font-semibold text-sm text-[#f7f8f8]">Batch Add Sending Domains</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setShowBatchModal(false);
+                  setBatchResultMsg("");
+                }}
+                className="text-[#8a8f98] hover:text-[#f7f8f8] text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-[#8a8f98]">
+              Paste multiple domains below (one per line or comma-separated). The system will automatically provision 2048-bit RSA DKIM keypairs and DNS templates for each domain in one batch.
+            </p>
+
+            <form onSubmit={handleBatchSubmit} className="space-y-4">
+              <div>
+                <label className="text-[11px] font-semibold text-[#8a8f98] block mb-1">Domain Names</label>
+                <textarea
+                  rows={6}
+                  required
+                  value={batchDomainsInput}
+                  onChange={(e) => setBatchDomainsInput(e.target.value)}
+                  placeholder={"acme-growth.com\noutreach-corp.io\nb2b-connect.net"}
+                  className="w-full bg-[#18191a] border border-[#23252a] rounded-lg p-3 text-xs text-[#f7f8f8] font-mono focus:border-[#3b9eff] focus:outline-none placeholder-[#62666d]"
+                />
+              </div>
+
+              {batchResultMsg && (
+                <div className="p-3 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{batchResultMsg}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#23252a]">
+                <button
+                  type="button"
+                  onClick={() => setShowBatchModal(false)}
+                  className="px-4 py-2 rounded-lg bg-[#18191a] hover:bg-[#202123] text-[#8a8f98] text-xs font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isBatchAdding}
+                  className="px-5 py-2 rounded-lg bg-[#3b9eff] hover:bg-[#2b8eed] text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  {isBatchAdding && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isBatchAdding ? "Generating Keys & Adding..." : "Batch Add All Domains"}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

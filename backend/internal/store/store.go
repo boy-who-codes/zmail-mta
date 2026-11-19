@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -438,6 +439,60 @@ func (s *Store) GetPrimarySendingIP() string {
 
 func (s *Store) AddDomain(domainName string) (*models.Domain, error) {
 	return s.AddDomainWithDNS(domainName, "k202611", "")
+}
+
+// BatchAddDomains creates multiple sending domains and generates DKIM keypairs automatically
+func (s *Store) BatchAddDomains(domainNames []string) ([]*models.Domain, []string, error) {
+	var added []*models.Domain
+	var failed []string
+
+	for _, raw := range domainNames {
+		clean := strings.TrimSpace(strings.ToLower(raw))
+		clean = strings.TrimPrefix(clean, "http://")
+		clean = strings.TrimPrefix(clean, "https://")
+		clean = strings.Split(clean, "/")[0]
+		if clean == "" || !strings.Contains(clean, ".") {
+			failed = append(failed, fmt.Sprintf("%s (invalid domain name)", raw))
+			continue
+		}
+
+		dom, err := s.AddDomain(clean)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%s)", clean, err.Error()))
+			continue
+		}
+		added = append(added, dom)
+	}
+
+	return added, failed, nil
+}
+
+// IsLocalDomain checks if a domain belongs to this MailOps instance (domains list or mailboxes)
+func (s *Store) IsLocalDomain(domainName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isLocalDomainLocked(domainName)
+}
+
+func (s *Store) isLocalDomainLocked(domainName string) bool {
+	domainName = strings.TrimSpace(strings.ToLower(domainName))
+	if domainName == "" {
+		return false
+	}
+	if domainName == "zmail.local" || domainName == "mailops.local" {
+		return true
+	}
+	for _, d := range s.domains {
+		if strings.EqualFold(d.DomainName, domainName) {
+			return true
+		}
+	}
+	for _, m := range s.mailboxes {
+		if strings.EqualFold(m.Domain, domainName) {
+			return true
+		}
+	}
+	return false
 }
 
 func isPublicIP(ipStr string) bool {
@@ -1452,31 +1507,51 @@ func (s *Store) InjectMessage(req models.InjectRequest) (*models.InjectResponse,
 		smtpTarget = "127.0.0.1:2525"
 	}
 
+	// If recipient domain belongs to this MailOps instance, immediately record in local inbox
+	if s.isLocalDomainLocked(destDomain) {
+		localInbound := models.InboundMessage{
+			ID:         fmt.Sprintf("loc-%s", msgID),
+			Sender:     req.From,
+			Recipient:  req.To,
+			Subject:    req.Subject,
+			BodyText:   req.Text,
+			BodyHTML:   req.HTML,
+			SPFStatus:  "pass",
+			DKIMStatus: "valid",
+			ReceivedAt: time.Now().UTC(),
+		}
+		go func(im models.InboundMessage) {
+			_, _ = s.AddInboundEmail(im)
+		}(localInbound)
+	}
+
 	// Asynchronously inject directly into live KumoMTA ESMTP listener
 	go func(f, t, subj, p, body, mid string) {
-		conn, err := net.DialTimeout("tcp", smtpTarget, 3*time.Second)
+		conn, err := net.DialTimeout("tcp", smtpTarget, 4*time.Second)
 		if err != nil {
+			log.Printf("[InjectMessage] dial error to %s: %v", smtpTarget, err)
 			return
 		}
 		defer conn.Close()
 
 		c, err := smtp.NewClient(conn, "mailops.local")
 		if err != nil {
+			log.Printf("[InjectMessage] smtp.NewClient error: %v", err)
 			return
 		}
 		defer c.Close()
 
-		if err := c.Hello("mailops.local"); err != nil {
-			return
-		}
 		if err := c.Mail(f); err != nil {
+			log.Printf("[InjectMessage] MAIL error: %v", err)
 			return
 		}
 		if err := c.Rcpt(t); err != nil {
+			log.Printf("[InjectMessage] RCPT error: %v", err)
 			return
 		}
 		w, err := c.Data()
 		if err != nil {
+			log.Printf("[InjectMessage] DATA error: %v", err)
 			return
 		}
 		var msgBuf bytes.Buffer

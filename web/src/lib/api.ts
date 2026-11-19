@@ -68,6 +68,19 @@ export async function addDomain(domain: string) {
   return res.json();
 }
 
+export async function batchAddDomains(domains: string[]): Promise<{ added: any[]; failed?: string[]; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/domains/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domains }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to batch add domains");
+  }
+  return res.json();
+}
+
 export async function deleteDomain(domainOrId: string) {
   const res = await fetch(`${API_BASE}/api/v1/domains`, {
     method: "DELETE",
@@ -1246,6 +1259,7 @@ export interface Mailbox {
   health_status: "excellent" | "good" | "warning" | "suspended";
   weight: number;
   credential_ref?: string;
+  password?: string;
   smtp_host?: string;
   smtp_port?: number;
   smtp_user?: string;
@@ -1324,6 +1338,55 @@ export async function addMailbox(mailbox: Partial<Mailbox>): Promise<Mailbox> {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || "Failed to add mailbox");
+  }
+  return res.json();
+}
+
+export async function batchAddMailboxes(payload: {
+  domains: string[];
+  prefixes: string[];
+  password?: string;
+  ip_pool_id?: string;
+  daily_limit?: number;
+  hourly_limit?: number;
+}): Promise<{ added: Mailbox[]; failed?: string[]; message: string }> {
+  const res = await fetch(`${API_BASE}/api/v1/mailboxes/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to batch create mailboxes");
+  }
+  return res.json();
+}
+
+export async function simulateInboundMessage(payload: {
+  sender: string;
+  recipient: string;
+  subject: string;
+  body_text?: string;
+  body_html?: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/v1/inbound`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: `sim-${Date.now()}`,
+      sender: payload.sender,
+      recipient: payload.recipient,
+      subject: payload.subject,
+      body_text: payload.body_text || payload.subject,
+      body_html: payload.body_html || `<p>${payload.body_text || payload.subject}</p>`,
+      spf_status: "pass",
+      dkim_status: "valid",
+      received_at: Math.floor(Date.now() / 1000),
+    }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to simulate inbound message");
   }
   return res.json();
 }

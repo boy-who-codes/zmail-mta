@@ -57,6 +57,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/nodes", s.handleGetNodes)
 	s.mux.HandleFunc("GET /api/v1/domains", s.handleGetDomains)
 	s.mux.HandleFunc("POST /api/v1/domains", s.handleAddDomain)
+	s.mux.HandleFunc("POST /api/v1/domains/batch", s.handleBatchAddDomains)
+	s.mux.HandleFunc("GET /api/v1/domains/check-local", s.handleCheckLocalDomain)
 	s.mux.HandleFunc("DELETE /api/v1/domains", s.handleDeleteDomain)
 	s.mux.HandleFunc("POST /api/v1/domains/primary", s.handleSetPrimaryDomain)
 	s.mux.HandleFunc("POST /api/v1/domains/verify", s.handleVerifyDomain)
@@ -129,6 +131,7 @@ func (s *Server) registerRoutes() {
 	// Mailbox & Mailbox Rotation Endpoints (Phase 3)
 	s.mux.HandleFunc("GET /api/v1/mailboxes", s.handleGetMailboxes)
 	s.mux.HandleFunc("POST /api/v1/mailboxes", s.handleAddMailbox)
+	s.mux.HandleFunc("POST /api/v1/mailboxes/batch", s.handleBatchAddMailboxes)
 	s.mux.HandleFunc("PUT /api/v1/mailboxes", s.handleUpdateMailbox)
 	s.mux.HandleFunc("DELETE /api/v1/mailboxes", s.handleDeleteMailbox)
 
@@ -324,6 +327,46 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(dom)
+}
+
+func (s *Server) handleBatchAddDomains(w http.ResponseWriter, r *http.Request) {
+	var req models.BatchAddDomainsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "malformed request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	added, failed, err := s.store.BatchAddDomains(req.Domains)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(models.BatchAddDomainsResponse{
+		Added:   added,
+		Failed:  failed,
+		Message: fmt.Sprintf("Successfully processed %d domains", len(added)),
+	})
+}
+
+func (s *Server) handleCheckLocalDomain(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("domain")))
+	recipient := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("recipient")))
+	if domain == "" && recipient != "" {
+		parts := strings.Split(recipient, "@")
+		if len(parts) == 2 {
+			domain = parts[1]
+		}
+	}
+
+	isLocal := s.store.IsLocalDomain(domain)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"domain":   domain,
+		"is_local": isLocal,
+	})
 }
 
 func (s *Server) handleVerifyDomain(w http.ResponseWriter, r *http.Request) {

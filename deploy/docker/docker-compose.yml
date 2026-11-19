@@ -81,6 +81,7 @@ services:
       - ../../backend/data:/app/data
       - ../../cred.txt:/app/cred.txt:ro
       - ./policy:/app/policy
+      - ./dovecot/users:/app/dovecot/users
       - ./logs:/var/log/kumomta:ro
     environment:
       - PORT=8080

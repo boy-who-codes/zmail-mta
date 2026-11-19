@@ -24,6 +24,7 @@ import {
   HelpCircle,
   Flame,
   Check,
+  Copy,
   XCircle,
   Bot,
   MessageSquareQuote,
@@ -38,7 +39,9 @@ import {
   MailboxPool,
   MailboxRotationSimulation,
   fetchMailboxes,
+  fetchDomains,
   addMailbox,
+  batchAddMailboxes,
   updateMailbox,
   deleteMailbox,
   fetchMailboxPools,
@@ -62,6 +65,7 @@ import {
   updateAIWarmupSettings,
   triggerAIWarmupRound,
 } from "../../lib/api";
+import { copyToClipboardSafe } from "../../lib/clipboard";
 
 export const MailboxesApp: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"pools" | "mailboxes" | "warmup" | "ai_network" | "simulator">("pools");
@@ -82,8 +86,21 @@ export const MailboxesApp: React.FC = () => {
   // Modals
   const [showAddMailboxModal, setShowAddMailboxModal] = useState<boolean>(false);
   const [showAddPoolModal, setShowAddPoolModal] = useState<boolean>(false);
+  const [showBulkModal, setShowBulkModal] = useState<boolean>(false);
   const [editingMailbox, setEditingMailbox] = useState<Mailbox | null>(null);
   const [editingPool, setEditingPool] = useState<MailboxPool | null>(null);
+
+  // Available Domains
+  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
+
+  // Bulk Mailbox Provisioning State
+  const [bulkSelectedDomains, setBulkSelectedDomains] = useState<string[]>([]);
+  const [bulkPrefixes, setBulkPrefixes] = useState<string[]>(["admin", "support", "contact", "sales", "hello"]);
+  const [bulkCustomPrefix, setBulkCustomPrefix] = useState<string>("");
+  const [bulkPassword, setBulkPassword] = useState<string>("");
+  const [bulkLoading, setBulkLoading] = useState<boolean>(false);
+  const [bulkCreatedList, setBulkCreatedList] = useState<Mailbox[]>([]);
+  const [bulkCopied, setBulkCopied] = useState<boolean>(false);
 
   // Mailbox Form State
   const [mbEmail, setMbEmail] = useState("");
@@ -125,16 +142,29 @@ export const MailboxesApp: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [mRes, pRes, ipRes, wRes] = await Promise.all([
+      const [mRes, pRes, ipRes, wRes, dRes] = await Promise.all([
         fetchMailboxes().catch(() => []),
         fetchMailboxPools().catch(() => []),
         fetchIPPools().catch(() => []),
         fetchWarmupSummary().catch(() => null),
+        fetchDomains().catch(() => []),
       ]);
       setMailboxes(mRes);
       setPools(pRes);
       setIpPools(ipRes);
       setWarmupSummary(wRes);
+
+      const domNames: string[] = (dRes || [])
+        .map((d: any) => d.domain || d.DomainName || d.domain_name)
+        .filter(Boolean);
+      setAvailableDomains(domNames);
+      if (domNames.length > 0 && mbDomain === "zmail.local") {
+        setMbDomain(domNames[0]);
+      }
+      if (domNames.length > 0 && bulkSelectedDomains.length === 0) {
+        setBulkSelectedDomains(domNames);
+      }
+
       if (pRes.length > 0 && !simPoolId) {
         setSimPoolId(pRes[0].id);
         setSimStrategy(pRes[0].strategy);
@@ -242,11 +272,13 @@ export const MailboxesApp: React.FC = () => {
           weight: Number(mbWeight),
           signature_html: mbSignature,
           warmup_enabled: mbWarmup,
+          password: mbSMTPPass || undefined,
         });
         showToast(`Mailbox "${editingMailbox.email}" updated successfully.`);
       } else {
         await addMailbox({
           email: mbEmail,
+          password: mbSMTPPass,
           display_name: mbDisplayName || mbEmail,
           first_name: mbFirstName,
           last_name: mbLastName,
@@ -329,6 +361,57 @@ export const MailboxesApp: React.FC = () => {
     } catch (err: any) {
       showToast("Failed to delete mailbox: " + err.message);
     }
+  };
+
+  const handleBulkGenerateMailboxes = async () => {
+    if (bulkSelectedDomains.length === 0) {
+      alert("Please select at least one domain.");
+      return;
+    }
+    const allPrefixes = [...bulkPrefixes];
+    if (bulkCustomPrefix.trim()) {
+      const customs = bulkCustomPrefix.split(/[\n,]+/).map((p) => p.trim()).filter(Boolean);
+      allPrefixes.push(...customs);
+    }
+    if (allPrefixes.length === 0) {
+      alert("Please select or enter at least one mailbox prefix (e.g. support, admin).");
+      return;
+    }
+
+    try {
+      setBulkLoading(true);
+      const res = await batchAddMailboxes({
+        domains: bulkSelectedDomains,
+        prefixes: Array.from(new Set(allPrefixes)),
+        password: bulkPassword.trim() || undefined,
+        ip_pool_id: "default",
+      });
+
+      if (res.added && res.added.length > 0) {
+        setBulkCreatedList(res.added);
+        showToast(`Provisioned ${res.added.length} mailboxes across ${bulkSelectedDomains.length} domains!`);
+        await loadData();
+      } else {
+        showToast("No new mailboxes created: " + (res.failed?.join(", ") || "Already existed"));
+      }
+    } catch (err: any) {
+      alert("Bulk setup error: " + err.message);
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const handleCopyBulkCredentials = () => {
+    if (bulkCreatedList.length === 0) return;
+    const header = "Email,Username,Password,SMTP_Host,SMTP_Port,IMAP_Host,IMAP_Port\n";
+    const rows = bulkCreatedList.map((mb) => {
+      const dom = mb.domain;
+      return `${mb.email},${mb.email},${mb.password || ""},mail.${dom},587,mail.${dom},993`;
+    }).join("\n");
+
+    copyToClipboardSafe(header + rows);
+    setBulkCopied(true);
+    setTimeout(() => setBulkCopied(false), 3000);
   };
 
   const handleCreatePool = async (e: React.FormEvent) => {
@@ -447,17 +530,29 @@ export const MailboxesApp: React.FC = () => {
             </button>
           )}
           {activeTab === "mailboxes" && (
-            <button
-              onClick={() => {
-                setEditingMailbox(null);
-                resetMailboxForm();
-                setShowAddMailboxModal(true);
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ff69b4] hover:bg-[#ff52a5] text-black font-semibold text-xs transition-all shadow-md shadow-[#ff69b4]/20"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Sender Mailbox</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setBulkCreatedList([]);
+                  setShowBulkModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#1a1f2e] hover:bg-[#252c40] text-[#3b9eff] border border-[#3b9eff]/30 font-semibold text-xs transition-all shadow-md shadow-[#3b9eff]/10 cursor-pointer"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Bulk Setup Mailboxes</span>
+              </button>
+              <button
+                onClick={() => {
+                  setEditingMailbox(null);
+                  resetMailboxForm();
+                  setShowAddMailboxModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#ff69b4] hover:bg-[#ff52a5] text-black font-semibold text-xs transition-all shadow-md shadow-[#ff69b4]/20 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Sender Mailbox</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -1712,6 +1807,246 @@ export const MailboxesApp: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* BULK SETUP MAILBOXES MODAL */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-[#0f1117] border border-[#262c3b] shadow-2xl p-6 space-y-4 max-h-[92vh] overflow-y-auto animate-scaleUp">
+            <div className="flex items-center justify-between pb-3 border-b border-[#20242e]">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-[#3b9eff]" />
+                <div>
+                  <h3 className="font-bold text-sm text-white">Bulk Provision Mailboxes Across Domains</h3>
+                  <p className="text-[11px] text-[#8a8f98]">
+                    Generate multiple mailboxes across selected domains in 1 click with synchronized SMTP &amp; Dovecot IMAP credentials.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowBulkModal(false);
+                  setBulkCreatedList([]);
+                }}
+                className="text-[#8a8f98] hover:text-white text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {bulkCreatedList.length === 0 ? (
+              <div className="space-y-4 text-xs">
+                {/* Step 1: Select Domains */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-semibold text-[#8a8f98] uppercase tracking-wider">
+                      1. Select Target Domains ({bulkSelectedDomains.length} / {availableDomains.length} selected)
+                    </label>
+                    {availableDomains.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (bulkSelectedDomains.length === availableDomains.length) {
+                            setBulkSelectedDomains([]);
+                          } else {
+                            setBulkSelectedDomains([...availableDomains]);
+                          }
+                        }}
+                        className="text-[10px] text-[#3b9eff] hover:underline cursor-pointer"
+                      >
+                        {bulkSelectedDomains.length === availableDomains.length ? "Deselect All" : "Select All"}
+                      </button>
+                    )}
+                  </div>
+
+                  {availableDomains.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-[#141720] border border-[#262c3b] text-[#8a8f98] text-[11px] text-center">
+                      No sending domains found. Open <strong>DNS &amp; Domains</strong> on the dock to add your domains first.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto p-2 rounded-xl bg-[#141720] border border-[#222736]">
+                      {availableDomains.map((dom) => {
+                        const isChecked = bulkSelectedDomains.includes(dom);
+                        return (
+                          <label
+                            key={dom}
+                            className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors border ${
+                              isChecked
+                                ? "bg-[#1f2538] border-[#3b9eff]/50 text-white"
+                                : "bg-[#0f1117] border-[#222736] text-[#8a8f98] hover:text-white"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setBulkSelectedDomains([...bulkSelectedDomains, dom]);
+                                } else {
+                                  setBulkSelectedDomains(bulkSelectedDomains.filter((d) => d !== dom));
+                                }
+                              }}
+                              className="accent-[#3b9eff]"
+                            />
+                            <span className="font-mono text-[11px] truncate">{dom}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Step 2: Role Prefixes */}
+                <div className="space-y-2">
+                  <label className="text-[11px] font-semibold text-[#8a8f98] uppercase tracking-wider block">
+                    2. Mailbox User Prefixes
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {["admin", "support", "contact", "sales", "hello", "info", "team", "billing"].map((pre) => {
+                      const isSelected = bulkPrefixes.includes(pre);
+                      return (
+                        <button
+                          key={pre}
+                          type="button"
+                          onClick={() => {
+                            if (isSelected) {
+                              setBulkPrefixes(bulkPrefixes.filter((p) => p !== pre));
+                            } else {
+                              setBulkPrefixes([...bulkPrefixes, pre]);
+                            }
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-mono border transition-all cursor-pointer ${
+                            isSelected
+                              ? "bg-[#ff69b4]/20 border-[#ff69b4]/50 text-[#ff69b4] font-bold"
+                              : "bg-[#141720] border-[#262c3b] text-[#8a8f98] hover:text-white"
+                          }`}
+                        >
+                          {isSelected ? "✓ " : "+ "}{pre}@
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-[#62666d] block mb-1">Custom prefixes (comma-separated):</label>
+                    <input
+                      type="text"
+                      value={bulkCustomPrefix}
+                      onChange={(e) => setBulkCustomPrefix(e.target.value)}
+                      placeholder="e.g. newsletter, ceo, outreach"
+                      className="w-full bg-[#141720] border border-[#262c3b] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#62666d] focus:border-[#3b9eff] focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Step 3: Password & Security */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-[#8a8f98] uppercase tracking-wider block">
+                    3. Password for Generated Mailboxes
+                  </label>
+                  <input
+                    type="text"
+                    value={bulkPassword}
+                    onChange={(e) => setBulkPassword(e.target.value)}
+                    placeholder="Leave blank to auto-generate secure passwords (recommended)"
+                    className="w-full bg-[#141720] border border-[#262c3b] rounded-xl px-3 py-2 text-xs text-white placeholder-[#62666d] font-mono focus:border-[#3b9eff] focus:outline-none"
+                  />
+                  <span className="text-[10px] text-[#62666d]">
+                    Each mailbox will receive SMTP &amp; Dovecot IMAP credentials with this password.
+                  </span>
+                </div>
+
+                {/* Calculation Summary */}
+                <div className="p-3 rounded-xl bg-[#141720] border border-[#262c3b] flex items-center justify-between text-xs font-mono">
+                  <span className="text-[#8a8f98]">Projected Total Mailboxes:</span>
+                  <span className="text-[#3b9eff] font-bold">
+                    {bulkSelectedDomains.length * (bulkPrefixes.length + (bulkCustomPrefix.trim() ? bulkCustomPrefix.split(',').filter(Boolean).length : 0))} Mailboxes
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#20242e]">
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkModal(false)}
+                    className="px-4 py-2 rounded-xl bg-[#141720] hover:bg-[#1e2330] text-xs text-[#d0d6e0] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bulkLoading || bulkSelectedDomains.length === 0}
+                    onClick={handleBulkGenerateMailboxes}
+                    className="px-5 py-2 rounded-xl bg-[#3b9eff] hover:bg-[#2b8eed] text-white font-semibold text-xs flex items-center gap-2 disabled:opacity-50 cursor-pointer shadow-md shadow-[#3b9eff]/20"
+                  >
+                    {bulkLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{bulkLoading ? "Provisioning Mailboxes..." : "Generate All Mailboxes"}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Success / Result View */
+              <div className="space-y-4 text-xs animate-fadeIn">
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                    <div>
+                      <div className="font-bold text-sm">Successfully Provisioned {bulkCreatedList.length} Mailboxes!</div>
+                      <div className="text-[11px] text-emerald-300/80">
+                        All credentials registered in KumoMTA SMTP (Port 587/2525) and Dovecot IMAP (Port 993/143).
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCopyBulkCredentials}
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {bulkCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{bulkCopied ? "Copied CSV!" : "Copy CSV Credentials"}</span>
+                  </button>
+                </div>
+
+                <div className="max-h-60 overflow-y-auto rounded-xl border border-[#222736] bg-[#141720]">
+                  <table className="w-full text-left font-mono text-[11px]">
+                    <thead className="bg-[#0e1015] text-[#8a8f98] border-b border-[#222736]">
+                      <tr>
+                        <th className="py-2 px-3">Email</th>
+                        <th className="py-2 px-3">Password</th>
+                        <th className="py-2 px-3">SMTP / IMAP Host</th>
+                        <th className="py-2 px-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1e2330]">
+                      {bulkCreatedList.map((mb) => (
+                        <tr key={mb.id} className="hover:bg-[#181b24]">
+                          <td className="py-2 px-3 text-white font-medium">{mb.email}</td>
+                          <td className="py-2 px-3 text-[#ff69b4]">{mb.password}</td>
+                          <td className="py-2 px-3 text-[#8a8f98]">mail.{mb.domain}</td>
+                          <td className="py-2 px-3 text-[#27a644]">Active (Pool: {mb.ip_pool_id})</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-[#20242e]">
+                  <span className="text-[11px] text-[#62666d]">
+                    Ready for cold email outreach tools (Instantly, Smartlead) or Webmail login.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBulkModal(false);
+                      setBulkCreatedList([]);
+                    }}
+                    className="px-5 py-2 rounded-xl bg-[#ff69b4] hover:bg-[#ff52a5] text-black font-semibold text-xs cursor-pointer shadow-md shadow-[#ff69b4]/20"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

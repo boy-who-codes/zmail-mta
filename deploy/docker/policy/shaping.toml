@@ -5,26 +5,6 @@ max_deliveries_per_connection = 100
 max_message_rate = "100/s"
 enable_tls = "Opportunistic"
 
-[provider."google"]
-match = [
-  { MXSuffix = ".google.com" },
-  { MXSuffix = ".googlemail.com" }
-]
-connection_limit = 20
-max_connection_rate = "50/s"
-max_deliveries_per_connection = 100
-max_message_rate = "50/s"
-enable_tls = "Required"
-consecutive_connection_failures_before_delay = 5
-
-[[provider."google".automation]]
-regex = '''421.*4\.7\.28.*Speed of sending exceeded'''
-action = [
-  { SetConfig = { name = "max_message_rate", value = "5/s" } },
-  { SetConfig = { name = "connection_limit", value = 2 } }
-]
-duration = "15m"
-
 [provider."yahoo"]
 match = [
   { MXSuffix = ".yahoodns.net" }
@@ -60,4 +40,24 @@ max_connection_rate = "25/s"
 max_deliveries_per_connection = 50
 max_message_rate = "25/s"
 enable_tls = "Opportunistic"
+
+[provider."google"]
+match = [
+  { MXSuffix = ".google.com" },
+  { MXSuffix = ".googlemail.com" }
+]
+connection_limit = 20
+max_connection_rate = "50/s"
+max_deliveries_per_connection = 100
+max_message_rate = "50/s"
+enable_tls = "Required"
+consecutive_connection_failures_before_delay = 5
+
+[[provider."google".automation]]
+regex = '''421.*4\.7\.28.*Speed of sending exceeded'''
+action = [
+  { SetConfig = { name = "max_message_rate", value = "5/s" } },
+  { SetConfig = { name = "connection_limit", value = 2 } }
+]
+duration = "15m"
 
