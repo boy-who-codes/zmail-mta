@@ -71,6 +71,7 @@ services:
   # 4. ZMAIL Control Plane Backend (Go)
   backend:
     container_name: mailops-backend
+    image: docker-backend:latest
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -101,6 +102,7 @@ services:
   # 5. ZMAIL Web Desktop OS (Next.js)
   web:
     container_name: mailops-web
+    image: docker-web:latest
     build:
       context: ../../web
       dockerfile: Dockerfile
@@ -118,6 +120,7 @@ services:
   dovecot:
     container_name: mailops-dovecot
     hostname: imap.mailops.local
+    image: docker-dovecot:latest
     build:
       context: ./dovecot
       dockerfile: Dockerfile
