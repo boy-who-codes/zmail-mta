@@ -1,4 +1,5 @@
 ["default"]
+ip_lookup_strategy = "Ipv4Only"
 connection_limit = 10
 max_connection_rate = "100/min"
 max_deliveries_per_connection = 100

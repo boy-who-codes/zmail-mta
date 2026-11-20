@@ -130,6 +130,8 @@ local shaper = shaping:setup_with_automation {
   extra_files = { '/opt/kumomta/etc/policy/shaping.toml' },
 }
 
+kumo.on('get_egress_path_config', shaper.get_egress_path_config)
+
 kumo.on('init', function()
   -- 1. Public MX Inbound + Relay ESMTP Listener with STARTTLS & SMTP AUTH support
   local tls_cert = read_file_content('/opt/kumomta/etc/policy/tls.crt')
