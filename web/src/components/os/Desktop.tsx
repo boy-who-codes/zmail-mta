@@ -57,6 +57,8 @@ import { WebmailApp } from "../apps/WebmailApp";
 import { DocsApp } from "../apps/DocsApp";
 
 import { GnomeLoginPanel } from "./GnomeLoginPanel";
+import { TourOverlay } from "./TourOverlay";
+import { useTour } from "../../context/TourContext";
 
 const APP_COMPONENT_MAP: Record<string, React.FC> = {
   campaigns: CampaignsApp,
@@ -150,9 +152,19 @@ const WALLPAPER_PRESETS: Record<WallpaperId, { containerBg: string; overlay: Rea
 };
 
 export const Desktop: React.FC = () => {
-  const { windows, openApp, wallpaper, accessibility, isLocked } = useWindowManager();
+  const { windows, openApp: rawOpenApp, wallpaper, accessibility, isLocked } = useWindowManager();
+  const { hasSeenAppTour, startAppTour } = useTour();
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [desktopViewMode, setDesktopViewMode] = useState<"sections" | "compact">("sections");
+
+  const openApp = (appId: any) => {
+    rawOpenApp(appId);
+    if (!hasSeenAppTour(appId)) {
+      setTimeout(() => {
+        startAppTour(appId);
+      }, 500);
+    }
+  };
 
   const currentWp = WALLPAPER_PRESETS[wallpaper] || WALLPAPER_PRESETS.obsidian;
 
@@ -424,6 +436,9 @@ export const Desktop: React.FC = () => {
 
         {/* Slide-out Notification Center */}
         {!isLocked && <NotificationCenter />}
+
+        {/* Guided Tour Engine Overlay */}
+        {!isLocked && <TourOverlay />}
       </div>
 
       {/* GNOME GDM Login Screen Panel Overlay */}

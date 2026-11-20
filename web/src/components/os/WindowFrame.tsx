@@ -3,7 +3,8 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { WindowInstance } from "../../types/os";
 import { useWindowManager } from "../../context/WindowManagerContext";
-import { Minus, Square, X, RefreshCw } from "lucide-react";
+import { useTour, APP_TOURS } from "../../context/TourContext";
+import { Minus, Square, X, RefreshCw, HelpCircle } from "lucide-react";
 
 interface WindowFrameProps {
   instance: WindowInstance;
@@ -20,6 +21,8 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({ instance, children }) 
     updateWindowBounds,
     accessibility,
   } = useWindowManager();
+  const { startAppTour } = useTour();
+  const hasTour = !!APP_TOURS[instance.appId];
 
   const isFocused = activeWindowId === instance.id;
   const isDragging = useRef(false);
@@ -197,8 +200,22 @@ export const WindowFrame: React.FC<WindowFrameProps> = ({ instance, children }) 
           </span>
         </div>
 
-        {/* Right Action placeholder */}
-        <div className="w-20 flex justify-end items-center gap-1.5">
+        {/* Right Action buttons */}
+        <div className="w-24 flex justify-end items-center gap-1.5">
+          {hasTour && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                startAppTour(instance.appId as any);
+              }}
+              title="Start App Tour"
+              className="px-1.5 py-0.5 rounded text-[10px] font-mono text-[#ff69b4] hover:bg-[#ff69b4]/15 border border-[#ff69b4]/30 hover:border-[#ff69b4] transition-all flex items-center gap-1"
+            >
+              <HelpCircle className="w-2.5 h-2.5" />
+              <span>Tour</span>
+            </button>
+          )}
+
           <button
             onClick={(e) => {
               e.stopPropagation();

@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useWindowManager } from "../../context/WindowManagerContext";
+import { useTour } from "../../context/TourContext";
 import { APPS, APP_CATEGORIES } from "../../data/mockData";
 import {
   Server,
@@ -24,6 +25,7 @@ import {
   BookOpen,
   Lock,
   LogOut,
+  Info,
 } from "lucide-react";
 
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -50,7 +52,17 @@ const ICON_MAP: Record<string, React.ElementType> = {
 };
 
 export const Dock: React.FC = () => {
-  const { windows, activeWindowId, openApp, lockScreen, logout, currentUser } = useWindowManager();
+  const { windows, activeWindowId, openApp: rawOpenApp, lockScreen, logout, currentUser } = useWindowManager();
+  const { startSystemTour, hasSeenAppTour, startAppTour } = useTour();
+
+  const openApp = (appId: any) => {
+    rawOpenApp(appId);
+    if (!hasSeenAppTour(appId)) {
+      setTimeout(() => {
+        startAppTour(appId);
+      }, 500);
+    }
+  };
 
   const [hoveredApp, setHoveredApp] = useState<(typeof APPS)[0] | { id: string; title: string; category: string; description: string; shortTitle: string } | null>(null);
   const [tooltipX, setTooltipX] = useState<number | null>(null);
@@ -177,6 +189,31 @@ export const Dock: React.FC = () => {
 
           {/* Separator */}
           <div className="h-8 w-px bg-[#23252a] my-auto mx-0.5 shrink-0" />
+
+          {/* Guided Tour "i" Button in Dock */}
+          <div className="relative flex flex-col items-center flex-shrink-0">
+            <button
+              onClick={startSystemTour}
+              onMouseEnter={(e) =>
+                handleMouseEnter(
+                  {
+                    id: "action-tour",
+                    title: "System Guided Tour (i)",
+                    category: "Help & Overview",
+                    description: "Restart the comprehensive interactive tour of MailOps at any time.",
+                    shortTitle: "Tour",
+                  },
+                  e
+                )
+              }
+              onMouseLeave={handleMouseLeave}
+              className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 lg:w-12 lg:h-12 rounded-lg sm:rounded-xl flex items-center justify-center bg-gradient-to-tr from-[#141516] to-[#1c1d25] border border-[#ff69b4]/50 hover:bg-[#ff69b4]/15 hover:border-[#ff69b4] shadow-md transition-all duration-200 hover:-translate-y-1.5 active:scale-95 cursor-pointer group"
+              title="Start MailOps Guided Tour"
+            >
+              <Info className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-[#ff69b4] group-hover:scale-110 transition-transform" />
+            </button>
+            <div className="h-1.5 mt-0.5 sm:mt-1" />
+          </div>
 
           {/* Lock / Logout Quick Action in Dock */}
           <div className="relative flex flex-col items-center flex-shrink-0">
